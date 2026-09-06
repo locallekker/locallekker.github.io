@@ -189,7 +189,77 @@ async function handleChargeSuccess(supabase: any, data: any) {
         return
     }
 
+    // ── Saved card setup ────────────────────────────────────────────
+    // Web checkout returns by reloading the PWA, so the client-side WebView
+    // callback cannot be relied upon to store the new reusable authorization.
+    if (paymentType === 'payment_method_setup') {
+        await recoverPaymentMethodSetup(supabase, userId, data)
+        return
+    }
+
     console.log(`charge.success: unrecognized payment_type "${paymentType}", skipping`)
+}
+
+async function recoverPaymentMethodSetup(supabase: any, userId: string, data: any) {
+    const authorization = data.authorization ?? {}
+    const authorizationCode = authorization.authorization_code
+
+    if (!authorizationCode || authorization.reusable !== true) {
+        console.warn(`payment_method_setup: no reusable authorization for user ${userId}`)
+        return
+    }
+
+    const cardPayload = {
+        card_type: authorization.card_type ?? 'card',
+        last4: authorization.last4 ?? '****',
+        exp_month: authorization.exp_month ?? null,
+        exp_year: authorization.exp_year ?? null,
+        bank: authorization.bank ?? null,
+        brand: authorization.brand ?? null,
+        is_active: true,
+        updated_at: new Date().toISOString(),
+    }
+
+    const { data: existing, error: lookupError } = await supabase
+        .from('members_card_details')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('authorization_code', authorizationCode)
+        .maybeSingle()
+
+    if (lookupError) {
+        console.error('payment_method_setup: card lookup failed:', lookupError.message)
+        return
+    }
+
+    if (existing) {
+        const { error } = await supabase
+            .from('members_card_details')
+            .update(cardPayload)
+            .eq('id', existing.id)
+        if (error) console.error('payment_method_setup: card refresh failed:', error.message)
+        return
+    }
+
+    const { data: activeCards, error: countError } = await supabase
+        .from('members_card_details')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('is_active', true)
+
+    if (countError || (activeCards?.length ?? 0) >= 3) {
+        console.error('payment_method_setup: card limit check failed or limit reached')
+        return
+    }
+
+    const { error } = await supabase.from('members_card_details').insert({
+        user_id: userId,
+        authorization_code: authorizationCode,
+        ...cardPayload,
+        is_primary: (activeCards?.length ?? 0) === 0,
+        created_at: new Date().toISOString(),
+    })
+    if (error) console.error('payment_method_setup: card insert failed:', error.message)
 }
 
 // ── Subscription payment recovery ─────────────────────────────────────

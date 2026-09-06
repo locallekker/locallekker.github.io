@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:logger/logger.dart';
 import 'package:local_lekker/widgets/branded_app_bar.dart';
 import '../../services/supabase_service.dart';
 import '../../services/paystack_service.dart';
+import '../../services/web_checkout.dart';
 import 'payment_method_webview_page.dart';
 
 class PaymentMethodsPage extends StatefulWidget {
@@ -106,6 +108,18 @@ class _PaymentMethodsPageState extends State<PaymentMethodsPage> {
       }
 
       if (!mounted) return;
+      if (kIsWeb) {
+        final opened = await openWebCheckout(authUrl);
+        if (!opened && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Could not open the secure payment page. Please try again.'),
+            ),
+          );
+        }
+        return;
+      }
+
       final result = await Navigator.push<bool>(
         context,
         MaterialPageRoute(

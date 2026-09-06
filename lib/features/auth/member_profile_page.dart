@@ -10,6 +10,7 @@ import '../../services/admin_service.dart';
 import '../../services/chat_service.dart';
 import '../../services/cache_service.dart';
 import '../../services/navigation_service.dart';
+import '../../services/web_checkout.dart';
 import '../chat/chat_thread_page.dart';
 import 'change_password_page.dart';
 import 'payment_method_webview_page.dart';
@@ -1865,7 +1866,20 @@ class _MemberBankingDetailsDialogState
                       setState(() => _isSaving = false);
 
                       if (authUrl != null) {
-                        // Navigate to PaymentMethodWebViewPage for secure card tokenization
+                        if (kIsWeb) {
+                          final opened = await openWebCheckout(authUrl);
+                          if (!opened && context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text(
+                                  'Could not open the secure payment page. Please try again.',
+                                ),
+                              ),
+                            );
+                          }
+                          return;
+                        }
+
                         Navigator.of(context).pop(); // Close current dialog
                         if (!mounted) return;
                         final result = await Navigator.push(

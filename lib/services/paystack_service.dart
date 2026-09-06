@@ -5,6 +5,7 @@ import 'dart:convert';
 import 'package:logger/logger.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter/foundation.dart';
+import 'package:local_lekker/services/web_checkout.dart';
 
 /// Thrown when a member tries to save more than [PaystackService.maxSavedCards]
 /// cards. The UI catches this to prompt the member to delete an existing card
@@ -258,9 +259,7 @@ class PaystackService {
     try {
       // Build payment data
       // Use app-configured callback URL so our WebView can detect success reliably
-      final callbackUrl =
-          dotenv.env['PAYSTACK_CALLBACK_URL'] ??
-          'locallekker://payment/callback';
+      final callbackUrl = paystackCallbackUrl();
 
       // If we have a Paystack customer_code saved for this user, include it
       // so Paystack shows the saved card and only requires CVV. Skipped when
@@ -1624,8 +1623,7 @@ class PaystackService {
             'customer': customerCode,
           'reference': reference,
           'callback_url':
-              dotenv.env['PAYSTACK_CALLBACK_URL'] ??
-              'locallekker://payment/callback',
+              paystackCallbackUrl(),
           'channels': ['card'], // Enable card payments
           'metadata': {
             'user_id': userId,
@@ -2221,7 +2219,7 @@ class PaystackService {
           'email': userEmail,
           'amount': amount, // R1.00 in kobo for card verification
           'reference': 'pm_${userId}_${DateTime.now().millisecondsSinceEpoch}',
-          'callback_url': dotenv.env['PAYSTACK_CALLBACK_URL'] ?? 'locallekker://payment/callback',
+          'callback_url': paystackCallbackUrl(),
           'metadata': {
             'user_id': userId,
             'payment_type': 'payment_method_setup',

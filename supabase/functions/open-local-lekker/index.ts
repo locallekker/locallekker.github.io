@@ -4,6 +4,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
 const deepLink = "locallekker://auth/callback?type=signup_reminder"
 const androidIntent =
   "intent://auth/callback?type=signup_reminder#Intent;scheme=locallekker;package=com.locallekker.app;end"
+const webSignupReminderUrl = "https://locallekker.github.io/?type=signup_reminder"
 
 serve(async (req) => {
   const url = new URL(req.url)
@@ -11,8 +12,9 @@ serve(async (req) => {
   const trackingToken = url.searchParams.get("token")
   const userAgent = req.headers.get("user-agent") ?? ""
   const isAndroid = /Android/i.test(userAgent)
+  const isIos = /iPhone|iPad|iPod/i.test(userAgent)
   const isMobile = isAndroid || /iPhone|iPad|iPod/i.test(userAgent)
-  const appTarget = isAndroid ? androidIntent : deepLink
+  const appTarget = isAndroid ? androidIntent : isIos ? webSignupReminderUrl : deepLink
 
   if (!action && !trackingToken) {
     return new Response(null, {

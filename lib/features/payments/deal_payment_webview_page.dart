@@ -10,7 +10,7 @@ import 'package:logger/logger.dart';
 import 'package:flutter/foundation.dart';
 import 'package:local_lekker/widgets/branded_app_bar.dart';
 import 'package:local_lekker/core/utils/display_name_helpers.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'package:local_lekker/services/web_checkout.dart';
 
 class DealPaymentWebViewPage extends StatefulWidget {
   final String authorizationUrl;
@@ -1600,11 +1600,12 @@ class _DealPaymentWebViewPageState extends State<DealPaymentWebViewPage> with Wi
       }
     });
 
-    // webview_flutter has no web implementation — open checkout in a new tab
-    // and rely on the API-verification polling and Realtime deal listener
-    // above (both already started, both independent of the webview) instead.
+    // webview_flutter has no web implementation — navigate this tab to the
+    // checkout (a new tab is popup-blocked on iOS Safari) and rely on the
+    // API-verification polling and Realtime deal listener above (both already
+    // started, both independent of the webview) when the member returns.
     if (kIsWeb) {
-      launchUrl(Uri.parse(widget.authorizationUrl), webOnlyWindowName: '_blank');
+      openWebCheckout(widget.authorizationUrl);
       return;
     }
 

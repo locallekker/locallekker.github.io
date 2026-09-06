@@ -19,6 +19,10 @@ class DeepLinkService {
   }
 
   bool _isSignupCompletion(Uri uri) {
+    if (kIsWeb && uri.queryParameters['type']?.toLowerCase() == 'signup_reminder') {
+      return true;
+    }
+
     if (uri.scheme != 'locallekker') return false;
 
     final isDirectSignupLink =
@@ -58,7 +62,7 @@ class DeepLinkService {
     if (accessToken != null && (type == 'recovery' || type == 'magiclink')) {
       return {
         'accessToken': accessToken,
-        if (refreshToken != null) 'refreshToken': refreshToken,
+        'refreshToken': ?refreshToken,
       };
     }
 
@@ -70,8 +74,8 @@ class DeepLinkService {
 
     // Handle initial link when app is launched from deep link
     _appLinks.getInitialLink().then((link) {
-      if (link != null) {
-        _handleDeepLink(link.toString());
+      if (link case final uri?) {
+        _handleDeepLink(uri.toString());
       }
     });
 
@@ -135,8 +139,18 @@ class DeepLinkService {
 
   Future<bool> checkForSignupCompletionLink() async {
     try {
+      // Uri.base is available immediately in browsers and does not depend on
+      // app_links providing a web implementation.
+      if (kIsWeb && _isSignupCompletion(Uri.base)) {
+        return true;
+      }
+
       final link = await _appLinks.getInitialLink();
-      return link != null && _isSignupCompletion(Uri.parse(link.toString()));
+      if (link != null && _isSignupCompletion(Uri.parse(link.toString()))) {
+        return true;
+      }
+
+      return false;
     } catch (e) {
       if (kDebugMode) {
         print('Error checking for signup completion link: $e');
