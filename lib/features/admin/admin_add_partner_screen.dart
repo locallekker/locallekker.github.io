@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:local_lekker/widgets/branded_app_bar.dart';
 import 'package:logger/logger.dart';
+import '../../core/constants/deal_categories.dart';
 import '../../services/supabase_service.dart';
 import 'package:local_lekker/core/theme/app_colors.dart';
 
@@ -22,10 +23,16 @@ class _AdminAddPartnerScreenState extends State<AdminAddPartnerScreen> {
   final _surnameCtrl = TextEditingController();
   final _businessNameCtrl = TextEditingController();
   final _contactCtrl = TextEditingController();
+  final _produceDescriptionCtrl = TextEditingController();
+  final _alcoholDescriptionCtrl = TextEditingController();
+  final _sportsDescriptionCtrl = TextEditingController();
 
   String _selectedCategory = 'Restaurant';
   String? _selectedProvince;
   String? _selectedCity;
+  bool _sellsFreshProduce = false;
+  bool _sellsAlcohol = false;
+  bool _offersSportsActivities = false;
   bool _obscurePassword = true;
   bool _isSubmitting = false;
 
@@ -105,6 +112,9 @@ class _AdminAddPartnerScreenState extends State<AdminAddPartnerScreen> {
     _surnameCtrl.dispose();
     _businessNameCtrl.dispose();
     _contactCtrl.dispose();
+    _produceDescriptionCtrl.dispose();
+    _alcoholDescriptionCtrl.dispose();
+    _sportsDescriptionCtrl.dispose();
     super.dispose();
   }
 
@@ -125,6 +135,9 @@ class _AdminAddPartnerScreenState extends State<AdminAddPartnerScreen> {
         'user_type': 'trusted_partner',
         'admin_created': true,
         'password_set': true,
+        'sells_fresh_produce': _sellsFreshProduce,
+        'sells_alcohol': _sellsAlcohol,
+        'offers_sports_activities': _offersSportsActivities,
       };
 
       final result = await SupabaseService.instance.adminCreateTrustedPartner(
@@ -139,12 +152,86 @@ class _AdminAddPartnerScreenState extends State<AdminAddPartnerScreen> {
 
       final ok = result['ok'] == true;
       if (ok) {
+        // Account creation only makes the auth user; seed the businesses row so
+        // the category and Fresh & Local flag are persisted immediately.
+        final newUserId = result['user_id']?.toString();
+        if (newUserId != null && newUserId.isNotEmpty) {
+          try {
+            await SupabaseService.instance.client.rpc(
+              'admin_update_trusted_partner',
+              params: {
+                'payload': {
+                  'partner_id': newUserId,
+                  'name': _nameCtrl.text.trim(),
+                  'surname': _surnameCtrl.text.trim(),
+                  'email': _emailCtrl.text.trim().toLowerCase(),
+                  'contact': _contactCtrl.text.trim(),
+                  'city': _selectedCity ?? '',
+                  'business_name': _businessNameCtrl.text.trim(),
+                  'category': _selectedCategory,
+                  'contact_number': _contactCtrl.text.trim(),
+                  'contact_email': _emailCtrl.text.trim().toLowerCase(),
+                  'sells_fresh_produce': _sellsFreshProduce,
+                  'produce_description': _sellsFreshProduce
+                      ? _produceDescriptionCtrl.text.trim()
+                      : '',
+                  'sells_alcohol': _sellsAlcohol,
+                  'alcohol_description': _sellsAlcohol
+                      ? _alcoholDescriptionCtrl.text.trim()
+                      : '',
+                  'offers_sports_activities': _offersSportsActivities,
+                  'sports_description': _offersSportsActivities
+                      ? _sportsDescriptionCtrl.text.trim()
+                      : '',
+                },
+              },
+            );
+          } catch (e) {
+            _logger.w('Business profile seeding failed for $newUserId: $e');
+          }
+        }
+
+        var onboardingEmailSent = false;
+        try {
+          final emailResponse = await SupabaseService.instance.client.functions
+              .invoke(
+                'send-admin-created-tp-email',
+                body: {
+                  'email': _emailCtrl.text.trim().toLowerCase(),
+                  'name': _nameCtrl.text.trim(),
+                  'surname': _surnameCtrl.text.trim(),
+                  'business_name': _businessNameCtrl.text.trim(),
+                  'category': _selectedCategory,
+                  'password': _passwordCtrl.text,
+                },
+              );
+          final responseData = emailResponse.data;
+          onboardingEmailSent = responseData is Map &&
+              responseData['email_sent'] == true;
+          if (!onboardingEmailSent) {
+            _logger.w('Trusted Partner onboarding email was not sent: $responseData');
+          }
+        } catch (e) {
+          _logger.w('Trusted Partner onboarding email failed: $e');
+        }
+
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Trusted Partner created successfully'),
             backgroundColor: AppColors.primary,
           ),
         );
+        if (!onboardingEmailSent) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Account created, but the onboarding email could not be sent.',
+              ),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
         Navigator.pop(context, true); // Return true to trigger refresh
       } else {
         final error = result['error']?.toString() ?? 'Unknown error';
@@ -299,6 +386,163 @@ class _AdminAddPartnerScreenState extends State<AdminAddPartnerScreen> {
                     .toList(),
                 onChanged: (v) => setState(() => _selectedCity = v),
                 validator: (v) => v == null ? 'Please select a city' : null,
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+                decoration: BoxDecoration(
+                  color: Colors.green.shade50,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.green.shade200),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      controlAffinity: ListTileControlAffinity.leading,
+                      value: _sellsFreshProduce,
+                      secondary: Icon(Icons.eco, color: Colors.green.shade700),
+                      title: const Text('$kFreshLocalCategory produce'),
+                      subtitle: const Text(
+                        'Lists this partner under the members\' Fresh & Local tab',
+                      ),
+                      onChanged: (v) =>
+                          setState(() => _sellsFreshProduce = v ?? false),
+                    ),
+                    if (_sellsFreshProduce)
+                      TextFormField(
+                        controller: _produceDescriptionCtrl,
+                        maxLines: 2,
+                        maxLength: 200,
+                        decoration: _inputDecoration(
+                          'What do they sell?',
+                          Icons.shopping_basket_outlined,
+                        ),
+                        validator: (v) {
+                          if (!_sellsFreshProduce) return null;
+                          return (v == null || v.trim().isEmpty)
+                              ? 'Describe the produce they sell'
+                              : null;
+                        },
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF7EDEF),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFE0C2C7)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      controlAffinity: ListTileControlAffinity.leading,
+                      value: _sellsAlcohol,
+                      secondary: const Icon(
+                        Icons.wine_bar,
+                        color: Color(0xFF722F37),
+                      ),
+                      title: const Text('$kLocalSipsCategory (alcohol)'),
+                      subtitle: const Text(
+                        'Locally produced wines, beers and spirits. Age restricted (18+).',
+                      ),
+                      onChanged: (v) =>
+                          setState(() => _sellsAlcohol = v ?? false),
+                    ),
+                    if (_sellsAlcohol) ...[
+                      TextFormField(
+                        controller: _alcoholDescriptionCtrl,
+                        maxLines: 2,
+                        maxLength: 200,
+                        decoration: _inputDecoration(
+                          'What do they produce?',
+                          Icons.liquor_outlined,
+                        ),
+                        validator: (v) {
+                          if (!_sellsAlcohol) return null;
+                          return (v == null || v.trim().isEmpty)
+                              ? 'Describe the alcohol they produce'
+                              : null;
+                        },
+                      ),
+                      const SizedBox(height: 4),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: const [
+                          Icon(
+                            Icons.info_outline,
+                            size: 15,
+                            color: Color(0xFF722F37),
+                          ),
+                          SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              'Upload the national liquor / distribution licence '
+                              'documents from Edit Partner once this partner has '
+                              'been created.',
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                color: Color(0xFF722F37),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE1F5FE),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFB3E5FC)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      controlAffinity: ListTileControlAffinity.leading,
+                      value: _offersSportsActivities,
+                      secondary: const Icon(
+                        Icons.sports_soccer,
+                        color: Color(0xFF01579B),
+                      ),
+                      title: const Text('$kLocallyActiveCategory (sport/fitness)'),
+                      subtitle: const Text(
+                        'Lists this partner under the members\' Locally Active tab',
+                      ),
+                      onChanged: (v) =>
+                          setState(() => _offersSportsActivities = v ?? false),
+                    ),
+                    if (_offersSportsActivities)
+                      TextFormField(
+                        controller: _sportsDescriptionCtrl,
+                        maxLines: 2,
+                        maxLength: 200,
+                        decoration: _inputDecoration(
+                          'What do they offer?',
+                          Icons.fitness_center_outlined,
+                        ),
+                        validator: (v) {
+                          if (!_offersSportsActivities) return null;
+                          return (v == null || v.trim().isEmpty)
+                              ? 'Describe the activities they offer'
+                              : null;
+                        },
+                      ),
+                  ],
+                ),
               ),
 
               const SizedBox(height: 32),

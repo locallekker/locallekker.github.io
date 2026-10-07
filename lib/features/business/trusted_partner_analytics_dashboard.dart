@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:fl_chart/fl_chart.dart';
 import '../../services/supabase_service.dart';
+import '../../widgets/branded_app_bar.dart';
 
 class TrustedPartnerAnalyticsDashboard extends StatefulWidget {
   const TrustedPartnerAnalyticsDashboard({super.key});
@@ -60,7 +61,7 @@ class _TrustedPartnerAnalyticsDashboardState
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
+      appBar: BrandedAppBar(
         title: const Text('Business Analytics'),
         actions: [
           IconButton(

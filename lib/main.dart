@@ -30,22 +30,35 @@ void main() async {
   }
 
   logger.i('Initializing Supabase...');
-  await SupabaseService.instance.init();
+  try {
+    await SupabaseService.instance.init().timeout(const Duration(seconds: 10));
+  } catch (e) {
+    logger.w('Supabase initialization failed: $e');
+  }
   logger.i('Supabase initialized');
 
   // Initialize cache service
   logger.i('Initializing cache service...');
-  await CacheService.instance.init();
+  try {
+    await CacheService.instance.init().timeout(const Duration(seconds: 5));
+  } catch (e) {
+    logger.w('Cache initialization failed: $e');
+  }
   logger.i('Cache service initialized');
+
+  runApp(const LocalLekkerApp());
 
   // Initialize deep link service
   logger.i('Initializing deep link service...');
   DeepLinkService().init();
 
-  // Initialize app fallback system
+  // Initialize slower fallback services after the first frame can render.
   logger.i('Initializing app fallback system...');
-  await AppFallbackSystem().initialize();
-  logger.i('App fallback system initialized');
+  unawaited(
+    AppFallbackSystem().initialize().then((_) {
+      logger.i('App fallback system initialized');
+    }),
+  );
 
   // Initialize Firebase (required for FCM push notifications)
   // TEMPORARILY DISABLED: Push notifications turned off
@@ -65,8 +78,7 @@ void main() async {
   // await PushNotificationService().initialize();
   // logger.i('Push notifications initialized');
 
-  logger.i('Running LocalLekkerApp...');
-  runApp(const LocalLekkerApp());
+  logger.i('LocalLekkerApp startup services initialized');
 }
 
 class LocalLekkerApp extends StatefulWidget {

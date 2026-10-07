@@ -81,6 +81,17 @@ class AdminService {
         return false;
       }
 
+      // Disable local renewal before the provider call. The scheduled worker
+      // must stop immediately even while Paystack cancellation is in flight.
+      await supabase
+          .from('subscriptions')
+          .update({
+            'auto_renew': false,
+            'renewal_in_progress_at': null,
+            'updated_at': DateTime.now().toIso8601String(),
+          })
+          .eq('user_id', memberId);
+
       final paystackService = PaystackService();
 
       String? emailToken;
@@ -108,6 +119,7 @@ class AdminService {
 
       final updateData = <String, dynamic>{
         'auto_renew': false,
+        'renewal_in_progress_at': null,
         'updated_at': DateTime.now().toIso8601String(),
       };
 

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:logger/logger.dart';
 import 'package:local_lekker/widgets/branded_app_bar.dart';
+import '../../core/constants/sa_locations.dart';
 import '../../services/supabase_service.dart';
 import 'tp_interest_thank_you_page.dart';
 
@@ -16,12 +17,16 @@ class _TpInterestFormPageState extends State<TpInterestFormPage> {
   final _formKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
   final _surnameController = TextEditingController();
-  final _cityController = TextEditingController();
   final _businessNameController = TextEditingController();
   final _emailController = TextEditingController();
   final _contactController = TextEditingController();
 
+  String? _selectedProvince;
+  String? _selectedCity;
   String? _selectedBusinessType;
+  bool _sellsFreshProduce = false;
+  bool _sellsAlcohol = false;
+  bool _offersSportsActivities = false;
   bool _isSubmitting = false;
 
   final List<String> _businessTypes = [
@@ -47,7 +52,6 @@ class _TpInterestFormPageState extends State<TpInterestFormPage> {
   void dispose() {
     _nameController.dispose();
     _surnameController.dispose();
-    _cityController.dispose();
     _businessNameController.dispose();
     _emailController.dispose();
     _contactController.dispose();
@@ -63,11 +67,14 @@ class _TpInterestFormPageState extends State<TpInterestFormPage> {
       final inquiryData = {
         'name': _nameController.text.trim(),
         'surname': _surnameController.text.trim(),
-        'city': _cityController.text.trim(),
+        'city': _selectedCity,
         'business_name': _businessNameController.text.trim(),
         'business_type': _selectedBusinessType,
         'email': _emailController.text.trim().toLowerCase(),
         'contact_number': _contactController.text.trim(),
+        'sells_fresh_produce': _sellsFreshProduce,
+        'sells_alcohol': _sellsAlcohol,
+        'offers_sports_activities': _offersSportsActivities,
       };
 
       // Store inquiry in Supabase
@@ -152,12 +159,31 @@ class _TpInterestFormPageState extends State<TpInterestFormPage> {
                     value == null || value.trim().isEmpty ? 'Surname is required' : null,
               ),
               const SizedBox(height: 12),
-              TextFormField(
-                controller: _cityController,
-                decoration: const InputDecoration(labelText: 'City'),
-                textCapitalization: TextCapitalization.words,
+              DropdownButtonFormField<String>(
+                initialValue: _selectedProvince,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'Province'),
+                items: kProvinces
+                    .map((p) => DropdownMenuItem(value: p, child: Text(p)))
+                    .toList(),
+                onChanged: (value) => setState(() {
+                  _selectedProvince = value;
+                  _selectedCity = null;
+                }),
                 validator: (value) =>
-                    value == null || value.trim().isEmpty ? 'City is required' : null,
+                    value == null ? 'Province is required' : null,
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                key: ValueKey(_selectedProvince),
+                initialValue: _selectedCity,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'City'),
+                items: (kCitiesByProvince[_selectedProvince] ?? const <String>[])
+                    .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                    .toList(),
+                onChanged: (value) => setState(() => _selectedCity = value),
+                validator: (value) => value == null ? 'City is required' : null,
               ),
               const SizedBox(height: 12),
               TextFormField(
@@ -183,6 +209,75 @@ class _TpInterestFormPageState extends State<TpInterestFormPage> {
                     setState(() => _selectedBusinessType = value),
                 validator: (value) =>
                     value == null ? 'Please select a business type' : null,
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                decoration: BoxDecoration(
+                  color: Colors.green.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.green.shade200),
+                ),
+                child: CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  value: _sellsFreshProduce,
+                  secondary: Icon(Icons.eco, color: Colors.green.shade700),
+                  title: const Text('I sell fresh produce'),
+                  subtitle: const Text(
+                    'Locally sourced milk, poultry, veg, fruit, meat etc.',
+                  ),
+                  onChanged: (value) =>
+                      setState(() => _sellsFreshProduce = value ?? false),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF7EDEF),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFFE0C2C7)),
+                ),
+                child: CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  value: _sellsAlcohol,
+                  secondary: const Icon(
+                    Icons.wine_bar,
+                    color: Color(0xFF722F37),
+                  ),
+                  title: const Text('I sell locally produced alcohol'),
+                  subtitle: const Text(
+                    'Wines, craft beers or spirits. A valid liquor licence is required.',
+                  ),
+                  onChanged: (value) =>
+                      setState(() => _sellsAlcohol = value ?? false),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE1F5FE),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFFB3E5FC)),
+                ),
+                child: CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  value: _offersSportsActivities,
+                  secondary: const Icon(
+                    Icons.sports_soccer,
+                    color: Color(0xFF01579B),
+                  ),
+                  title: const Text('I offer sport/fitness activities'),
+                  subtitle: const Text(
+                    'Clubs, coaching, gyms or other active-lifestyle services.',
+                  ),
+                  onChanged: (value) =>
+                      setState(() => _offersSportsActivities = value ?? false),
+                ),
               ),
               const SizedBox(height: 12),
               TextFormField(

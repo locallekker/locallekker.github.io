@@ -1,12 +1,19 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:local_lekker/widgets/branded_app_bar.dart';
 import 'package:flutter/foundation.dart';
 import 'package:logger/logger.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../../core/constants/deal_categories.dart';
 import '../../models/discount.dart';
 import '../../models/deal_schedule.dart';
 import '../../services/discount_service.dart';
 import '../../services/supabase_service.dart';
+import '../../services/admin_engagement_service.dart';
+import '../../widgets/deal_image_preview.dart';
+import '../../widgets/website_redirect_overlay.dart';
+import '../admin/website_redirect_deal_dialog.dart';
+import '../admin/booking_redirect_deal_dialog.dart';
 import 'deal_authorization_request_page.dart';
 import 'discount_management_page.dart';
 
@@ -14,7 +21,11 @@ class DealSelectionPage extends StatefulWidget {
   final bool isAdminMode;
   final String? cityFilter;
 
-  const DealSelectionPage({super.key, this.isAdminMode = false, this.cityFilter});
+  const DealSelectionPage({
+    super.key,
+    this.isAdminMode = false,
+    this.cityFilter,
+  });
 
   @override
   State<DealSelectionPage> createState() => _DealSelectionPageState();
@@ -47,16 +58,7 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
 
   // Deal Category Filter (for Deals mode)
   String? _selectedDealCategory; // null = all deal categories
-  final List<String> _availableDealCategories = [
-    'Food and Drink',
-    'Entertainment',
-    'Grocery and necessities',
-    'Retail',
-    'Beauty',
-    'Home',
-    'Health and Fitness',
-    'Other',
-  ];
+  final List<String> _availableDealCategories = kDealCategories;
 
   // Deal Type Filter (for Deals mode)
   String? _selectedDealType; // null = all deal types
@@ -117,16 +119,17 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
         // Member mode: fetch both in parallel
         final results = await Future.wait([
           _discountService.getAllActiveDiscountsWithTrustedPartners(
-              forceRefresh: forceRefresh),
+            forceRefresh: forceRefresh,
+          ),
           _discountService.getCompletedDealIdsForMember(userId),
         ]);
         deals = results[0] as List<Map<String, dynamic>>;
         completedOnceOffDealIds.addAll(results[1] as Set<String>);
       } else {
         // Admin mode or no user: just fetch deals
-        deals = await _discountService
-            .getAllActiveDiscountsWithTrustedPartners(
-                forceRefresh: forceRefresh);
+        deals = await _discountService.getAllActiveDiscountsWithTrustedPartners(
+          forceRefresh: forceRefresh,
+        );
       }
 
       // Filter deals by schedule - only show available deals
@@ -230,12 +233,21 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
         // Map raw deal type to display label
         String dealTypeLabel;
         String dealTypeKey;
-        if (rawDealType == 'buy_get') {
+        if (rawDealType == Discount.websiteRedirectType) {
+          dealTypeKey = Discount.websiteRedirectType;
+          dealTypeLabel = 'Website Deal';
+        } else if (rawDealType == Discount.bookingRedirectType) {
+          dealTypeKey = Discount.bookingRedirectType;
+          dealTypeLabel = 'Booking Deal';
+        } else if (rawDealType == 'buy_get') {
           dealTypeKey = 'buy_get';
           dealTypeLabel = 'Buy/Get';
         } else if (rawDealType == 'percent_item') {
           dealTypeKey = 'percent_item';
           dealTypeLabel = '% Off Item';
+        } else if (rawDealType == 'free_delivery') {
+          dealTypeKey = 'free_delivery';
+          dealTypeLabel = 'Free Delivery';
         } else if (isBillDiscount) {
           dealTypeKey = 'bill_discount';
           dealTypeLabel = 'Bill Discount';
@@ -295,6 +307,14 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
       _editDealAsAdmin(deal);
       return;
     }
+    if (_isWebsiteRedirect(deal)) {
+      _openWebsiteRedirect(deal);
+      return;
+    }
+    if (_isBookingRedirect(deal)) {
+      _openBookingRedirect(deal);
+      return;
+    }
     final dealId = deal['id'] as String;
     final isWeightBased = (deal['is_weight_based'] as bool?) ?? false;
     final quantity = _quantities[dealId] ?? (isWeightBased ? 100 : 1);
@@ -313,10 +333,122 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
 
   final Logger _adminLogger = Logger();
 
+  bool _isWebsiteRedirect(Map<String, dynamic> deal) =>
+      deal['deal_type'] == Discount.websiteRedirectType;
+
+  bool _isBookingRedirect(Map<String, dynamic> deal) =>
+      deal['deal_type'] == Discount.bookingRedirectType;
+
+  Future<void> _openWebsiteRedirect(Map<String, dynamic> deal) {
+    final partner = deal['trusted_partners'] as Map<String, dynamic>?;
+    return openWebsiteRedirectDeal(
+      context,
+      dealId: deal['id'] as String,
+      trustedPartnerId: deal['trusted_partner_id'] as String?,
+      partnerName: (partner?['business_name'] as String?) ?? 'Trusted Partner',
+      websiteUrl: partner?['website_url'] as String?,
+      logoUrl: partner?['logo_url'] as String?,
+    );
+  }
+
+  Future<void> _openBookingRedirect(Map<String, dynamic> deal) {
+    final partner = deal['trusted_partners'] as Map<String, dynamic>?;
+    final customData = deal['custom_data'] as Map<String, dynamic>?;
+    return openBookingRedirectDeal(
+      context,
+      dealId: deal['id'] as String,
+      trustedPartnerId: deal['trusted_partner_id'] as String?,
+      partnerName: (partner?['business_name'] as String?) ?? 'Trusted Partner',
+      bookingUrl: customData?['booking_url'] as String?,
+      logoUrl: partner?['logo_url'] as String?,
+    );
+  }
+
+  Widget _buildVisitWebsiteBadge() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: _kBrandBlue.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: _kBrandBlue.withOpacity(0.35)),
+      ),
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.language, size: 14, color: _kBrandBlue),
+          SizedBox(width: 4),
+          Text(
+            'Visit Website',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+              color: _kBrandBlue,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBookNowBadge() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: _kBrandBlue.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: _kBrandBlue.withOpacity(0.35)),
+      ),
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.sports_tennis, size: 14, color: _kBrandBlue),
+          SizedBox(width: 4),
+          Text(
+            'Book Now',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+              color: _kBrandBlue,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _editDealAsAdmin(Map<String, dynamic> deal) async {
+    if (_isWebsiteRedirect(deal)) {
+      final discount = Discount.fromJson(deal);
+      final saved = await showDialog<bool>(
+        context: context,
+        builder: (context) => WebsiteRedirectDealDialog(
+          trustedPartnerId: discount.trustedPartnerId,
+          existing: discount,
+        ),
+      );
+      if (saved == true && mounted) {
+        await _loadAvailableDeals(forceRefresh: true);
+      }
+      return;
+    }
+    if (_isBookingRedirect(deal)) {
+      final discount = Discount.fromJson(deal);
+      final saved = await showDialog<bool>(
+        context: context,
+        builder: (context) => BookingRedirectDealDialog(
+          trustedPartnerId: discount.trustedPartnerId,
+          existing: discount,
+        ),
+      );
+      if (saved == true && mounted) {
+        await _loadAvailableDeals(forceRefresh: true);
+      }
+      return;
+    }
     try {
       final discount = Discount.fromJson(deal);
-      final trustedPartnerId = deal['trusted_partner_id'] as String? ?? discount.trustedPartnerId;
+      final trustedPartnerId =
+          deal['trusted_partner_id'] as String? ?? discount.trustedPartnerId;
 
       final result = await showDialog<Map<String, dynamic>>(
         context: context,
@@ -400,7 +532,8 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
             final hasMatchingCity = deals.any((deal) {
               final dealCity = (deal['city'] as String?)?.trim();
               final bizCity = (deal['business_city'] as String?)?.trim();
-              return dealCity == _selectedCityFilter || bizCity == _selectedCityFilter;
+              return dealCity == _selectedCityFilter ||
+                  bizCity == _selectedCityFilter;
             });
             if (!hasMatchingCity) return; // skip entire partner
           }
@@ -415,7 +548,8 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
             if (_selectedCityFilter != null) {
               final dealCity = (deal['city'] as String?)?.trim();
               final bizCity = (deal['business_city'] as String?)?.trim();
-              if (dealCity != _selectedCityFilter && bizCity != _selectedCityFilter) {
+              if (dealCity != _selectedCityFilter &&
+                  bizCity != _selectedCityFilter) {
                 return false;
               }
             }
@@ -517,7 +651,9 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: BrandedAppBar(
-        title: Text(widget.isAdminMode ? 'Browse Deals (Admin)' : 'Browse Deals'),
+        title: Text(
+          widget.isAdminMode ? 'Browse Deals (Admin)' : 'Browse Deals',
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -587,10 +723,7 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
                         const SizedBox(width: 6),
                         const Text(
                           'All Regions',
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: Colors.grey,
-                          ),
+                          style: TextStyle(fontSize: 13, color: Colors.grey),
                         ),
                       ],
                     ),
@@ -600,16 +733,17 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
                               setState(() => _selectedCityFilter = null);
                               _applyFilters();
                             },
-                            child: const Icon(Icons.close, size: 18, color: Colors.grey),
+                            child: const Icon(
+                              Icons.close,
+                              size: 18,
+                              color: Colors.grey,
+                            ),
                           )
                         : Icon(
                             Icons.arrow_drop_down,
                             color: _kBrandBlue.withOpacity(0.7),
                           ),
-                    style: const TextStyle(
-                      fontSize: 13,
-                      color: Colors.black87,
-                    ),
+                    style: const TextStyle(fontSize: 13, color: Colors.black87),
                     items: [
                       const DropdownMenuItem<String>(
                         value: null,
@@ -626,7 +760,11 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
                           value: city,
                           child: Row(
                             children: [
-                              Icon(Icons.location_city, size: 16, color: _kBrandGreen),
+                              Icon(
+                                Icons.location_city,
+                                size: 16,
+                                color: _kBrandGreen,
+                              ),
                               SizedBox(width: 6),
                               Text(city, style: const TextStyle(fontSize: 13)),
                             ],
@@ -1201,6 +1339,8 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
     final imageUrl = deal['image_url'] as String?;
     final itemName = deal['item_name'] ?? '';
     final isActive = (deal['is_active'] as bool?) ?? true;
+    final isWebsiteRedirect = _isWebsiteRedirect(deal);
+    final isBookingRedirect = _isBookingRedirect(deal);
 
     // Calculate deal price and savings
     double dealPrice;
@@ -1221,48 +1361,11 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
       children: [
         // Deal Image
         if (imageUrl != null && imageUrl.isNotEmpty)
-          ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: Image.network(
-              _displayDealImageUrl(imageUrl),
-              width: 80,
-              height: 80,
-              fit: BoxFit.cover,
-              loadingBuilder: (context, child, loadingProgress) {
-                if (loadingProgress == null) return child;
-                return Container(
-                  width: 80,
-                  height: 80,
-                  color: Colors.grey.shade200,
-                  child: const Center(
-                    child: SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
-                  ),
-                );
-              },
-              errorBuilder: (context, error, stackTrace) {
-                return Container(
-                  width: 80,
-                  height: 80,
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [_kBrandBlue.withOpacity(0.5), _kBrandGreen.withOpacity(0.5)],
-                    ),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Icon(
-                    isBillDiscount ? Icons.receipt_long : Icons.local_offer,
-                    size: 32,
-                    color: Colors.white70,
-                  ),
-                );
-              },
-            ),
+          _buildCompactDealImageThumbnail(
+            imageUrl: imageUrl,
+            dealName: dealName,
+            dealId: deal['id'] as String,
+            isBillDiscount: isBillDiscount,
           )
         else
           Container(
@@ -1272,7 +1375,10 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
               gradient: LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
-                colors: [_kBrandBlue.withOpacity(0.7), _kBrandGreen.withOpacity(0.7)],
+                colors: [
+                  _kBrandBlue.withOpacity(0.7),
+                  _kBrandGreen.withOpacity(0.7),
+                ],
               ),
               borderRadius: BorderRadius.circular(8),
             ),
@@ -1315,7 +1421,11 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
               const SizedBox(height: 8),
 
               // Deal Details - Compact
-              if (isBillDiscount)
+              if (isWebsiteRedirect)
+                _buildVisitWebsiteBadge()
+              else if (isBookingRedirect)
+                _buildBookNowBadge()
+              else if (isBillDiscount)
                 Container(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 8,
@@ -1329,11 +1439,7 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(
-                        Icons.discount,
-                        size: 14,
-                        color: _kBrandGreen,
-                      ),
+                      Icon(Icons.discount, size: 14, color: _kBrandGreen),
                       const SizedBox(width: 4),
                       Text(
                         discount > 0
@@ -1456,9 +1562,7 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
                         Icon(
                           isActive ? Icons.check_circle : Icons.cancel,
                           size: 12,
-                          color: isActive
-                              ? _kBrandGreen
-                              : Colors.grey.shade600,
+                          color: isActive ? _kBrandGreen : Colors.grey.shade600,
                         ),
                         const SizedBox(width: 3),
                         Text(
@@ -1477,10 +1581,27 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
                   if (isActive || widget.isAdminMode)
                     ElevatedButton.icon(
                       onPressed: () => _requestDealAuthorization(deal),
-                      icon: Icon(widget.isAdminMode ? Icons.edit : Icons.shopping_cart, size: 14),
-                      label: Text(widget.isAdminMode ? 'Edit' : 'Request'),
+                      icon: Icon(
+                        widget.isAdminMode
+                            ? Icons.edit
+                            : isWebsiteRedirect || isBookingRedirect
+                            ? Icons.open_in_new
+                            : Icons.shopping_cart,
+                        size: 14,
+                      ),
+                      label: Text(
+                        widget.isAdminMode
+                            ? 'Edit'
+                            : isWebsiteRedirect
+                            ? 'Visit'
+                            : isBookingRedirect
+                            ? 'Book'
+                            : 'Request',
+                      ),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: widget.isAdminMode ? _kBrandGreen : _kBrandGreen,
+                        backgroundColor: widget.isAdminMode
+                            ? _kBrandGreen
+                            : _kBrandGreen,
                         foregroundColor: Colors.white,
                         padding: const EdgeInsets.symmetric(
                           horizontal: 12,
@@ -1753,71 +1874,180 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
     );
   }
 
-  void _showFullSizeImage(String imageUrl, String dealName) {
+  void _showFullSizeImage(String imageUrl, String dealName, String dealId) {
+    if (!widget.isAdminMode) {
+      unawaited(AdminEngagementService().recordDealOpen(dealId));
+    }
+    final displayUrl = _displayDealImageUrl(imageUrl);
+
     showDialog(
       context: context,
-      builder: (context) => Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Header with close button
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Expanded(
-                    child: Text(
-                      dealName,
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.close),
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                  ),
-                ],
+      builder: (context) => DealImagePreview(
+        imageUrl: displayUrl,
+        dealName: dealName,
+      ),
+    );
+  }
+
+  Widget _buildDealImageThumbnail({
+    required String imageUrl,
+    required String dealName,
+    required Discount discount,
+  }) {
+    return GestureDetector(
+      onTap: () => _showFullSizeImage(imageUrl, dealName, discount.id),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: Image.network(
+          _displayDealImageUrl(imageUrl),
+          width: 120,
+          height: 120,
+          fit: BoxFit.cover,
+          errorBuilder: (context, error, stackTrace) {
+            return Container(
+              width: 120,
+              height: 120,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    _kBrandBlue.withOpacity(0.5),
+                    _kBrandGreen.withOpacity(0.5),
+                  ],
+                ),
+                borderRadius: BorderRadius.circular(8),
               ),
-            ),
-            // Full size image
-            Flexible(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: Image.network(
-                    imageUrl,
-                    fit: BoxFit.contain,
-                    loadingBuilder: (context, child, loadingProgress) {
-                      if (loadingProgress == null) return child;
-                      return const Center(child: CircularProgressIndicator());
-                    },
-                    errorBuilder: (context, error, stackTrace) {
-                      return Container(
-                        height: 200,
-                        color: Colors.grey.shade200,
-                        child: const Center(
-                          child: Icon(
-                            Icons.broken_image,
-                            size: 48,
-                            color: Colors.grey,
-                          ),
-                        ),
-                      );
-                    },
-                  ),
+              child: Icon(
+                discount.isBillDiscount
+                    ? Icons.receipt_long
+                    : Icons.local_offer,
+                size: 48,
+                color: Colors.white70,
+              ),
+            );
+          },
+          loadingBuilder: (context, child, loadingProgress) {
+            if (loadingProgress == null) return child;
+            return Container(
+              width: 120,
+              height: 120,
+              color: Colors.grey.shade200,
+              child: const Center(
+                child: SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
                 ),
               ),
-            ),
-            const SizedBox(height: 16),
-          ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBillDiscountImageThumbnail({
+    required String imageUrl,
+    required String dealName,
+    required String dealId,
+  }) {
+    return GestureDetector(
+      onTap: () => _showFullSizeImage(imageUrl, dealName, dealId),
+      child: Container(
+        width: 60,
+        height: 60,
+        margin: const EdgeInsets.only(right: 12),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.grey.shade300),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(7),
+          child: Image.network(
+            _displayDealImageUrl(imageUrl),
+            fit: BoxFit.cover,
+            loadingBuilder: (context, child, loadingProgress) {
+              if (loadingProgress == null) return child;
+              return Container(
+                color: Colors.grey.shade100,
+                child: const Center(
+                  child: SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+              );
+            },
+            errorBuilder: (context, error, stackTrace) {
+              return Container(
+                color: Colors.grey.shade200,
+                child: const Icon(
+                  Icons.broken_image,
+                  size: 24,
+                  color: Colors.grey,
+                ),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCompactDealImageThumbnail({
+    required String imageUrl,
+    required String dealName,
+    required String dealId,
+    required bool isBillDiscount,
+  }) {
+    return GestureDetector(
+      onTap: () => _showFullSizeImage(imageUrl, dealName, dealId),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: Image.network(
+          _displayDealImageUrl(imageUrl),
+          width: 80,
+          height: 80,
+          fit: BoxFit.cover,
+          loadingBuilder: (context, child, loadingProgress) {
+            if (loadingProgress == null) return child;
+            return Container(
+              width: 80,
+              height: 80,
+              color: Colors.grey.shade200,
+              child: const Center(
+                child: SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+            );
+          },
+          errorBuilder: (context, error, stackTrace) {
+            return Container(
+              width: 80,
+              height: 80,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    _kBrandBlue.withOpacity(0.5),
+                    _kBrandGreen.withOpacity(0.5),
+                  ],
+                ),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(
+                isBillDiscount ? Icons.receipt_long : Icons.local_offer,
+                size: 32,
+                color: Colors.white70,
+              ),
+            );
+          },
         ),
       ),
     );
@@ -1867,49 +2097,10 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
                 children: [
                   // Image thumbnail if available
                   if (imageUrl != null) ...[
-                    GestureDetector(
-                      onTap: () => _showFullSizeImage(imageUrl, discount.name),
-                      child: Container(
-                        width: 60,
-                        height: 60,
-                        margin: const EdgeInsets.only(right: 12),
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: Colors.grey.shade300),
-                        ),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(7),
-                          child: Image.network(
-                            imageUrl,
-                            fit: BoxFit.cover,
-                            loadingBuilder: (context, child, loadingProgress) {
-                              if (loadingProgress == null) return child;
-                              return Container(
-                                color: Colors.grey.shade100,
-                                child: const Center(
-                                  child: SizedBox(
-                                    width: 20,
-                                    height: 20,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                    ),
-                                  ),
-                                ),
-                              );
-                            },
-                            errorBuilder: (context, error, stackTrace) {
-                              return Container(
-                                color: Colors.grey.shade200,
-                                child: const Icon(
-                                  Icons.broken_image,
-                                  size: 24,
-                                  color: Colors.grey,
-                                ),
-                              );
-                            },
-                          ),
-                        ),
-                      ),
+                    _buildBillDiscountImageThumbnail(
+                      imageUrl: imageUrl,
+                      dealName: discount.name,
+                      dealId: discount.id,
                     ),
                   ] else ...[
                     const Icon(
@@ -2007,53 +2198,10 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
             children: [
               // Deal Image - Left Side (Full Height)
               if (hasImage)
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: Image.network(
-                    _displayDealImageUrl(imageUrl),
-                    width: 120,
-                    height: 120,
-                    fit: BoxFit.cover,
-                    errorBuilder: (context, error, stackTrace) {
-                      return Container(
-                        width: 120,
-                        height: 120,
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                            colors: [
-                              _kBrandBlue.withOpacity(0.5),
-                              _kBrandGreen.withOpacity(0.5),
-                            ],
-                          ),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Icon(
-                          discount.isBillDiscount
-                              ? Icons.receipt_long
-                              : Icons.local_offer,
-                          size: 48,
-                          color: Colors.white70,
-                        ),
-                      );
-                    },
-                    loadingBuilder: (context, child, loadingProgress) {
-                      if (loadingProgress == null) return child;
-                      return Container(
-                        width: 120,
-                        height: 120,
-                        color: Colors.grey.shade200,
-                        child: const Center(
-                          child: SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
+                _buildDealImageThumbnail(
+                  imageUrl: imageUrl,
+                  dealName: discount.name,
+                  discount: discount,
                 )
               else
                 Container(
@@ -2063,7 +2211,10 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
                     gradient: LinearGradient(
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
-                      colors: [_kBrandBlue.withOpacity(0.7), _kBrandGreen.withOpacity(0.7)],
+                      colors: [
+                        _kBrandBlue.withOpacity(0.7),
+                        _kBrandGreen.withOpacity(0.7),
+                      ],
                     ),
                     borderRadius: BorderRadius.circular(8),
                   ),
@@ -2110,7 +2261,11 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
                     const SizedBox(height: 8),
 
                     // Deal Details - Compact
-                    if (discount.isBillDiscount)
+                    if (discount.isWebsiteRedirect)
+                      _buildVisitWebsiteBadge()
+                    else if (discount.isBookingRedirect)
+                      _buildBookNowBadge()
+                    else if (discount.isBillDiscount)
                       Container(
                         padding: const EdgeInsets.symmetric(
                           horizontal: 8,
@@ -2124,11 +2279,7 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(
-                              Icons.discount,
-                              size: 14,
-                              color: _kBrandGreen,
-                            ),
+                            Icon(Icons.discount, size: 14, color: _kBrandGreen),
                             const SizedBox(width: 4),
                             Text(
                               discount.percentage > 0
@@ -2273,10 +2424,27 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
                         if (discount.isActive || widget.isAdminMode)
                           ElevatedButton.icon(
                             onPressed: () => _requestDealAuthorization(deal),
-                            icon: Icon(widget.isAdminMode ? Icons.edit : Icons.shopping_cart, size: 14),
-                            label: Text(widget.isAdminMode ? 'Edit' : 'Request'),
+                            icon: Icon(
+                              widget.isAdminMode
+                                  ? Icons.edit
+                                  : discount.isWebsiteRedirect || discount.isBookingRedirect
+                                  ? Icons.open_in_new
+                                  : Icons.shopping_cart,
+                              size: 14,
+                            ),
+                            label: Text(
+                              widget.isAdminMode
+                                  ? 'Edit'
+                                  : discount.isWebsiteRedirect
+                                  ? 'Visit'
+                                  : discount.isBookingRedirect
+                                  ? 'Book'
+                                  : 'Request',
+                            ),
                             style: ElevatedButton.styleFrom(
-                              backgroundColor: widget.isAdminMode ? _kBrandGreen : _kBrandGreen,
+                              backgroundColor: widget.isAdminMode
+                                  ? _kBrandGreen
+                                  : _kBrandGreen,
                               foregroundColor: Colors.white,
                               padding: const EdgeInsets.symmetric(
                                 horizontal: 12,
@@ -2375,7 +2543,14 @@ class _BillDiscountDialogState extends State<BillDiscountDialog> {
   bool _addTip = false;
   bool _tipIsPercentage = true;
   final TextEditingController _tipController = TextEditingController();
-  String _paymentMethod = 'in_app'; // Default to in-app payment (consistent with all other deal types)
+  String _paymentMethod =
+      'in_app'; // Default to in-app payment (consistent with all other deal types)
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(AdminEngagementService().recordDealOpen(widget.discount.id));
+  }
 
   @override
   void dispose() {
@@ -2402,9 +2577,13 @@ class _BillDiscountDialogState extends State<BillDiscountDialog> {
 
     return exclusions.map((e) => e as Map<String, dynamic>).where((exclusion) {
       final dayOfWeek = exclusion['dayOfWeek'] as String?;
-      // Only show if the dayOfWeek matches today
-      // Recurring means it applies every week, not that it shows on all days
-      return dayOfWeek == currentDayOfWeek;
+      final allDays = exclusion['allDays'] == true;
+      final daysOfWeek = (exclusion['daysOfWeek'] as List<dynamic>? ?? [])
+          .map((day) => day.toString())
+          .toSet();
+      return allDays ||
+          daysOfWeek.contains(currentDayOfWeek) ||
+          dayOfWeek == currentDayOfWeek;
     }).toList();
   }
 
@@ -2858,7 +3037,10 @@ class _BillDiscountDialogState extends State<BillDiscountDialog> {
                 decoration: BoxDecoration(
                   color: _kBrandBlue.withOpacity(0.08),
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: _kBrandBlue.withOpacity(0.25), width: 2),
+                  border: Border.all(
+                    color: _kBrandBlue.withOpacity(0.25),
+                    width: 2,
+                  ),
                 ),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,

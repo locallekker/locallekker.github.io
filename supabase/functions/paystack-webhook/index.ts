@@ -13,7 +13,7 @@ const corsHeaders = {
     'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-paystack-signature',
 }
 
-// ── HMAC SHA-512 signature verification ──────────────────────────────
+// â”€â”€ HMAC SHA-512 signature verification â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function verifySignature(
     rawBody: string,
     signature: string,
@@ -34,8 +34,8 @@ async function verifySignature(
     return hashHex === signature
 }
 
-// ── Date helpers (mirror Dart SubscriptionService logic) ─────────────
-// Adds one calendar month, clamping the day (e.g. Jan 31 → Feb 28). Mirrors
+// â”€â”€ Date helpers (mirror Dart SubscriptionService logic) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Adds one calendar month, clamping the day (e.g. Jan 31 â†’ Feb 28). Mirrors
 // SubscriptionService.oneCalendarMonthFrom so webhook-activated periods match
 // app-activated periods exactly.
 function oneCalendarMonthFrom(from: Date): Date {
@@ -74,7 +74,7 @@ serve(async (req) => {
         const paystackSecretKeyRaw = Deno.env.get('PAYSTACK_SECRET_KEY') ?? ''
         const paystackSecretKey = paystackSecretKeyRaw.trim()
 
-        // ── Signature verification ────────────────────────────
+        // â”€â”€ Signature verification â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         const signature = req.headers.get('x-paystack-signature')
 
         if (!signature) {
@@ -102,7 +102,7 @@ serve(async (req) => {
             })
         }
 
-        // ── Parse & dispatch ──────────────────────────────────
+        // â”€â”€ Parse & dispatch â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         const supabase = createClient(supabaseUrl, supabaseServiceKey)
         const webhookData = JSON.parse(rawBody)
         const event = webhookData.event
@@ -154,9 +154,9 @@ serve(async (req) => {
     }
 })
 
-// ═══════════════════════════════════════════════════════════════════════
-// charge.success — dispatches to subscription OR deal payment recovery
-// ═══════════════════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// charge.success â€” dispatches to subscription OR deal payment recovery
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 async function handleChargeSuccess(supabase: any, data: any) {
     const reference = data.reference
     const amount = data.amount
@@ -171,25 +171,25 @@ async function handleChargeSuccess(supabase: any, data: any) {
         return
     }
 
-    // ── Subscription payment ──────────────────────────────
+    // â”€â”€ Subscription payment â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (paymentType === 'subscription') {
         await recoverSubscriptionPayment(supabase, userId, reference, amount, metadata)
         return
     }
 
-    // ── Intro campaign (R1) entry-offer payment ───────────
+    // â”€â”€ Intro campaign (R1) entry-offer payment â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (paymentType === 'promotion_intro') {
         await recoverIntroCampaignPayment(supabase, userId, reference, amount, metadata)
         return
     }
 
-    // ── Deal / one-time payment ───────────────────────────
+    // â”€â”€ Deal / one-time payment â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (paymentType === 'one_time_payment') {
         await recoverDealPayment(supabase, userId, reference, amount, metadata)
         return
     }
 
-    // ── Saved card setup ────────────────────────────────────────────
+    // â”€â”€ Saved card setup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Web checkout returns by reloading the PWA, so the client-side WebView
     // callback cannot be relied upon to store the new reusable authorization.
     if (paymentType === 'payment_method_setup') {
@@ -262,7 +262,7 @@ async function recoverPaymentMethodSetup(supabase: any, userId: string, data: an
     if (error) console.error('payment_method_setup: card insert failed:', error.message)
 }
 
-// ── Subscription payment recovery ─────────────────────────────────────
+// â”€â”€ Subscription payment recovery â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function recoverSubscriptionPayment(
     supabase: any,
     userId: string,
@@ -332,7 +332,6 @@ async function recoverSubscriptionPayment(
         .from('profiles')
         .update({
             subscription: 'active',
-            subscription_status: 'active',
             updated_at: now.toISOString(),
         })
         .eq('id', userId)
@@ -358,7 +357,7 @@ async function recoverSubscriptionPayment(
     console.log(`Subscription activated for ${userId} until ${newExpiry.toISOString()}`)
 }
 
-// ── Intro campaign payment recovery ───────────────────────────────────
+// â”€â”€ Intro campaign payment recovery â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Safety net: if the app was killed after Paystack charged the R1 intro fee
 // but before activateIntroCampaignSubscription ran, this activates the
 // promotional subscription server-side so the member isn't charged but stuck.
@@ -397,7 +396,7 @@ async function recoverIntroCampaignPayment(
     }
 
     // Authoritative free-month lookup. promotions.free_months IS NULL means a
-    // lifetime membership (never expires) — see confirm_promo_signup(). Metadata
+    // lifetime membership (never expires) â€” see confirm_promo_signup(). Metadata
     // coerces NULL -> 0, which would create an already-expired subscription and
     // block the member from requesting deals after paying the R1 intro fee.
     let isLifetime = false
@@ -418,7 +417,7 @@ async function recoverIntroCampaignPayment(
     }
 
     const now = new Date()
-    // Never create an already-expired subscription. Lifetime → 100 years;
+    // Never create an already-expired subscription. Lifetime â†’ 100 years;
     // otherwise grant the free months, with a one-month floor so the R1 payment
     // always buys at least the first billing period before R99.
     const monthsToGrant = isLifetime ? 1200 : (effectiveFreeMonths > 0 ? effectiveFreeMonths : 1)
@@ -473,7 +472,6 @@ async function recoverIntroCampaignPayment(
         .from('profiles')
         .update({
             subscription: 'active',
-            subscription_status: 'active',
             updated_at: now.toISOString(),
         })
         .eq('id', userId)
@@ -513,7 +511,7 @@ async function recoverIntroCampaignPayment(
     console.log(`Intro campaign activated for ${userId} until ${freePeriodEnd.toISOString()}`)
 }
 
-// ── Deal payment recovery ─────────────────────────────────────────────
+// â”€â”€ Deal payment recovery â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Safety net: if the app was killed after Paystack charged the card but
 // before _handlePaymentSuccess ran, the deal stays in 'approved' state.
 // This webhook marks it 'completed' so the member isn't charged but stuck.
@@ -582,7 +580,7 @@ async function recoverDealPayment(
         return
     }
 
-    // ── Fetch deal details for receipt generation ─────────────────────
+    // â”€â”€ Fetch deal details for receipt generation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const { data: dealFull } = await supabase
         .from('deal_authorizations')
         .select(`
@@ -603,7 +601,7 @@ async function recoverDealPayment(
     const dealName = discountData?.name ?? 'Deal'
     const dealAmount = (dealFull?.amount ?? amount / 100) as number
 
-    // ── Generate receipt number ───────────────────────────────────────
+    // â”€â”€ Generate receipt number â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     let receiptNumber = `RCP-${Date.now()}`
     if (businessId) {
         try {
@@ -619,7 +617,7 @@ async function recoverDealPayment(
     const qrCode = `RECEIPT:${deal.id}:${receiptNumber}`
     const transactionDate = new Date().toISOString()
 
-    // ── Insert virtual_receipts ───────────────────────────────────────
+    // â”€â”€ Insert virtual_receipts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (businessId) {
         const receiptData = {
             receipt_number: receiptNumber,
@@ -650,7 +648,7 @@ async function recoverDealPayment(
             console.log(`virtual_receipt created for deal ${deal.id}: ${receiptNumber}`)
         }
 
-        // ── Insert deal_receipts ──────────────────────────────────────
+        // â”€â”€ Insert deal_receipts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         const { error: drError } = await supabase
             .from('deal_receipts')
             .insert({
@@ -674,7 +672,7 @@ async function recoverDealPayment(
         }
     }
 
-    // ── Notify member ─────────────────────────────────────────────────
+    // â”€â”€ Notify member â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     await supabase.from('notifications').insert({
         user_id: userId,
         title: 'Payment Confirmed',
@@ -691,11 +689,11 @@ async function recoverDealPayment(
         },
     })
 
-    // ── Notify trusted partner ────────────────────────────────────────
+    // â”€â”€ Notify trusted partner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (trustedPartnerId) {
         await supabase.from('notifications').insert({
             user_id: trustedPartnerId,
-            title: '💰 Payment Received',
+            title: 'ðŸ’° Payment Received',
             message: `${memberName} paid R${dealAmount.toFixed(2)} for ${dealName}. Receipt #${receiptNumber} generated.`,
             type: 'payment_received',
             is_read: false,
@@ -715,10 +713,10 @@ async function recoverDealPayment(
     console.log(`Deal ${deal.id} recovered and marked completed, receipt: ${receiptNumber}`)
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// subscription.create — Paystack created a subscription after plan payment
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// subscription.create â€” Paystack created a subscription after plan payment
 // Saves the subscription_code to the subscriptions table for webhook matching
-// ═══════════════════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 async function handleSubscriptionCreate(supabase: any, data: any) {
     const subscriptionCode = data.subscription_code
     const customer = data.customer
@@ -790,9 +788,9 @@ async function handleSubscriptionCreate(supabase: any, data: any) {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// subscription.charge — auto-renewal after initial subscription
-// ═══════════════════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// subscription.charge â€” auto-renewal after initial subscription
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 async function handleSubscriptionCharge(supabase: any, data: any) {
     const subscriptionCode = data.subscription?.subscription_code || data.subscription_code
     const customer = data.customer
@@ -873,7 +871,6 @@ async function handleSubscriptionCharge(supabase: any, data: any) {
         .from('profiles')
         .update({
             subscription: 'active',
-            subscription_status: 'active',
             updated_at: now.toISOString(),
         })
         .eq('id', userId)
@@ -900,9 +897,9 @@ async function handleSubscriptionCharge(supabase: any, data: any) {
     console.log(`Subscription renewal processed for ${userId} until ${newExpiry.toISOString()}`)
 }
 
-// ═══════════════════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // invoice.payment_failed
-// ═══════════════════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 async function handlePaymentFailed(supabase: any, data: any) {
     const subscriptionCode = data.subscription_code
     console.log(`payment_failed sub=${subscriptionCode}`)
@@ -959,9 +956,9 @@ async function handlePaymentFailed(supabase: any, data: any) {
     console.log(`Payment failed handled for ${userId}`)
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// subscription.disable — voluntary cancellation
-// ═══════════════════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// subscription.disable â€” voluntary cancellation
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 async function handleSubscriptionDisable(supabase: any, data: any) {
     const subscriptionCode = data.subscription_code
     console.log(`subscription.disable sub=${subscriptionCode}`)
@@ -986,15 +983,15 @@ async function handleSubscriptionDisable(supabase: any, data: any) {
         .update({ status: 'cancelled', updated_at: now })
         .eq('paystack_subscription_code', subscriptionCode)
 
-    // Don't deactivate QR right away — let current period expire naturally
+    // Don't deactivate QR right away â€” let current period expire naturally
     // The app's checkAndHandleExpiredSubscription() handles expiry
 
     console.log(`Subscription cancelled for ${userId}`)
 }
 
-// ═══════════════════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // Helpers
-// ═══════════════════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 async function ensureActiveQRCode(supabase: any, userId: string) {
     const { data: existingQR } = await supabase
         .from('user_qr_codes')
@@ -1023,12 +1020,12 @@ async function ensureActiveQRCode(supabase: any, userId: string) {
     console.log(`Created QR code for ${userId}`)
 }
 
-// ═══════════════════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // transfer.failed / transfer.reversed
 // Fires when Paystack cannot settle funds to a subaccount's bank account.
 // This is the server-side signal for the "pending 24h then failed" pattern
 // caused by unverifiable ZAR bank accounts on subaccounts.
-// ═══════════════════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 async function handleTransferFailed(supabase: any, data: any, event: string) {
     const transferCode = data.transfer_code ?? data.reference ?? 'unknown'
     const recipient = data.recipient
@@ -1054,7 +1051,7 @@ async function handleTransferFailed(supabase: any, data: any, event: string) {
         // Notify the trusted partner that their settlement failed
         await supabase.from('notifications').insert({
             user_id: partnerId,
-            title: '⚠️ Settlement Failed',
+            title: 'âš ï¸ Settlement Failed',
             message: `A payment settlement of R${amount.toFixed(2)} to your bank account failed. Please verify your banking details in your Business Profile to avoid future payment issues.`,
             type: 'settlement_failed',
             is_read: false,
@@ -1071,7 +1068,7 @@ async function handleTransferFailed(supabase: any, data: any, event: string) {
 
         console.log(`Settlement failure notification sent to partner ${partnerId}`)
     } else {
-        // Subaccount not matched in DB — log for manual investigation
+        // Subaccount not matched in DB â€” log for manual investigation
         console.error(`transfer.failed: No DB record for subaccount=${subaccountCode}. Manual investigation required. Amount: R${amount}`)
     }
 
@@ -1084,7 +1081,7 @@ async function handleTransferFailed(supabase: any, data: any, event: string) {
     if (admins && admins.length > 0) {
         const adminNotifications = admins.map((admin: any) => ({
             user_id: admin.id,
-            title: '🚨 Partner Settlement Failed',
+            title: 'ðŸš¨ Partner Settlement Failed',
             message: `Settlement of R${amount.toFixed(2)} to subaccount ${subaccountCode} failed (${reason}). Manual action required.`,
             type: 'admin_settlement_failed',
             is_read: false,

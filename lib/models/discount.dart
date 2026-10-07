@@ -1,4 +1,11 @@
 class Discount {
+  /// Admin-only deal that sends members to the partner's website.
+  static const String websiteRedirectType = 'website_redirect';
+
+  /// Admin-only deal (Locally Active category) that sends members to an
+  /// external booking page (e.g. Playtomic) stored in custom_data.
+  static const String bookingRedirectType = 'booking_redirect';
+
   final String id;
   final String trustedPartnerId;
   final String name;
@@ -20,6 +27,7 @@ class Discount {
   final String? imageUrl;
   final Map<String, dynamic>? scheduleData;
   final String dealCategory;
+  final bool offersDelivery;
   final String? city; // City where this deal is available
   final DateTime createdAt;
   final DateTime updatedAt;
@@ -44,6 +52,7 @@ class Discount {
     this.imageUrl,
     this.scheduleData,
     this.dealCategory = 'Other',
+    this.offersDelivery = false,
     this.city,
     required this.createdAt,
     required this.updatedAt,
@@ -76,6 +85,7 @@ class Discount {
       imageUrl: json['image_url'] as String?,
       scheduleData: json['schedule_data'] as Map<String, dynamic>?,
       dealCategory: (json['deal_category'] as String?) ?? 'Other',
+      offersDelivery: (json['offers_delivery'] as bool?) ?? false,
       city: json['city'] as String?,
       createdAt: DateTime.parse(
         (json['created_at'] as String?) ??
@@ -109,6 +119,7 @@ class Discount {
       'image_url': imageUrl,
       'schedule_data': scheduleData,
       'deal_category': dealCategory,
+      'offers_delivery': offersDelivery,
       'city': city,
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt.toIso8601String(),
@@ -124,6 +135,20 @@ class Discount {
     final type = dealType.trim().toLowerCase();
     return type == 'percent_item' || type == 'percentitem';
   }
+
+  /// Item sold at its normal price, with delivery included at no charge.
+  bool get isFreeDelivery {
+    final type = dealType.trim().toLowerCase();
+    return type == 'free_delivery' || type == 'freedelivery';
+  }
+
+  bool get isWebsiteRedirect =>
+      dealType.trim().toLowerCase() == websiteRedirectType;
+
+  bool get isBookingRedirect =>
+      dealType.trim().toLowerCase() == bookingRedirectType;
+
+  String? get bookingUrl => customData?['booking_url'] as String?;
 
   double get dealPrice {
     // Type-aware pricing
@@ -164,6 +189,18 @@ class Discount {
   }
 
   String get discountDisplay {
+    if (isWebsiteRedirect) {
+      return 'Visit website';
+    }
+
+    if (isBookingRedirect) {
+      return 'Book now';
+    }
+
+    if (isFreeDelivery) {
+      return 'Free delivery';
+    }
+
     if (dealType == 'buy_get') {
       final buyName = customData?['buy_item_name'] ?? itemName;
       final freeName = customData?['free_item_name'] ?? 'bonus item';

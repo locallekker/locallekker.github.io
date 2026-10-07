@@ -1,11 +1,28 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:logger/logger.dart';
+import '../core/constants/deal_categories.dart';
 import '../models/discount.dart';
 import '../models/deal_authorization.dart';
 import '../models/virtual_receipt.dart';
 import '../models/notification.dart';
 import '../models/member_receipt.dart';
 import 'package:flutter/foundation.dart';
+
+/// Visibility + "new deals" state for a category entry banner
+/// (Fresh & Local, Local Sips, Local Eats).
+class FreshLocalSummary {
+  final bool hasPartners;
+  final int newDealCount;
+  final int partnerCount;
+  final int dealCount;
+
+  const FreshLocalSummary({
+    this.hasPartners = false,
+    this.newDealCount = 0,
+    this.partnerCount = 0,
+    this.dealCount = 0,
+  });
+}
 
 class DiscountService {
   static final DiscountService _instance = DiscountService._internal();
@@ -127,6 +144,295 @@ class DiscountService {
     }
   }
 
+  /// Trusted partners in a curated deal category.
+  ///
+  /// A partner qualifies by having at least one active deal in [category], or
+  /// by matching [businessCategory] or being explicitly flagged ([flagColumn]
+  /// on `businesses`) and having any active deal. Each entry carries the
+  /// business row plus `deal_count` and `offers_delivery`.
+  Future<List<Map<String, dynamic>>> _getCategoryPartners({
+    required String category,
+    required String logLabel,
+    String? flagColumn,
+    String? businessCategory,
+    String? city,
+  }) async {
+    try {
+      final results = await Future.wait<dynamic>([
+        _supabase
+            .from('trusted_partner_discounts')
+            .select('trusted_partner_id')
+            .eq('is_active', true)
+            .eq('deal_category', category),
+        if (flagColumn != null)
+          _supabase.from('businesses').select('owner_member_id').eq(
+            flagColumn,
+            true,
+          )
+        else
+          Future.value(<Map<String, dynamic>>[]),
+        if (businessCategory != null)
+          _supabase
+              .from('businesses')
+              .select('owner_member_id')
+              .eq('category', businessCategory)
+        else
+          Future.value(<Map<String, dynamic>>[]),
+      ]);
+
+      final candidateIds = <String>{};
+      for (final row in (results[0] as List)) {
+        final id = row['trusted_partner_id'] as String?;
+        if (id != null) candidateIds.add(id);
+      }
+      for (final row in (results[1] as List)) {
+        final id = row['owner_member_id'] as String?;
+        if (id != null) candidateIds.add(id);
+      }
+      for (final row in (results[2] as List)) {
+        final id = row['owner_member_id'] as String?;
+        if (id != null) candidateIds.add(id);
+      }
+      if (candidateIds.isEmpty) {
+        _logger.i('🔎 No $logLabel candidates (no category deals, no flags)');
+        return [];
+      }
+
+      var query = _supabase
+          .from('businesses')
+          .select(
+            'id, owner_member_id, name, category, city, address, logo_url, '
+            'produce_description, alcohol_description, liquor_license_verified, '
+            'sports_description, '
+            'contact_number, contact_email, '
+            'facebook_handle, instagram_handle, website_url, business_email',
+          )
+          .inFilter('owner_member_id', candidateIds.toList());
+
+      if (city != null && city.trim().isNotEmpty) {
+        query = query.eq('city', city.trim());
+      }
+      if (businessCategory != null) {
+        query = query.eq('category', businessCategory);
+      }
+
+      final businesses = List<Map<String, dynamic>>.from(await query);
+      if (businesses.isEmpty) {
+        _logger.i('🔎 No $logLabel businesses matched city filter "$city"');
+        return [];
+      }
+
+      final ownerIds = businesses
+          .map((b) => b['owner_member_id'] as String?)
+          .whereType<String>()
+          .toList();
+      if (ownerIds.isEmpty) return [];
+
+      final deals = List<Map<String, dynamic>>.from(
+        await _supabase
+            .from('trusted_partner_discounts')
+            .select('trusted_partner_id, deal_category, offers_delivery')
+            .inFilter('trusted_partner_id', ownerIds)
+            .eq('is_active', true),
+      );
+
+      final categoryCounts = <String, int>{};
+      final allCounts = <String, int>{};
+      final categoryDelivers = <String, bool>{};
+      final anyDelivers = <String, bool>{};
+      for (final deal in deals) {
+        final ownerId = deal['trusted_partner_id'] as String?;
+        if (ownerId == null) continue;
+        final delivers = (deal['offers_delivery'] as bool?) ?? false;
+        allCounts[ownerId] = (allCounts[ownerId] ?? 0) + 1;
+        if (delivers) anyDelivers[ownerId] = true;
+        if (deal['deal_category'] == category) {
+          categoryCounts[ownerId] = (categoryCounts[ownerId] ?? 0) + 1;
+          if (delivers) categoryDelivers[ownerId] = true;
+        }
+      }
+
+      final partners = <Map<String, dynamic>>[];
+      for (final business in businesses) {
+        final ownerId = business['owner_member_id'] as String?;
+        if (ownerId == null) continue;
+        final categoryCount = categoryCounts[ownerId] ?? 0;
+        final count = businessCategory != null
+            ? (allCounts[ownerId] ?? 0)
+            : categoryCount > 0
+            ? categoryCount
+            : (allCounts[ownerId] ?? 0);
+        if (count == 0) continue;
+        partners.add({
+          ...business,
+          'deal_count': count,
+          'offers_delivery': businessCategory != null
+              ? (anyDelivers[ownerId] ?? false)
+              : categoryCount > 0
+              ? (categoryDelivers[ownerId] ?? false)
+              : (anyDelivers[ownerId] ?? false),
+        });
+      }
+
+      partners.sort(
+        (a, b) => ((a['name'] as String?) ?? '').toLowerCase().compareTo(
+          ((b['name'] as String?) ?? '').toLowerCase(),
+        ),
+      );
+
+      _logger.i('🔎 Found ${partners.length} $logLabel partners');
+      return partners;
+    } catch (e) {
+      _logger.e('Failed to load $logLabel partners: $e');
+      return [];
+    }
+  }
+
+  /// Trusted partners in the Fresh & Local produce category.
+  Future<List<Map<String, dynamic>>> getFreshProducePartners({
+    String? city,
+  }) => _getCategoryPartners(
+    category: kFreshLocalCategory,
+    flagColumn: 'sells_fresh_produce',
+    logLabel: 'fresh produce',
+    city: city,
+  );
+
+  /// Trusted partners in the Local Sips locally produced alcohol category.
+  Future<List<Map<String, dynamic>>> getLocalSipsPartners({String? city}) =>
+      _getCategoryPartners(
+        category: kLocalSipsCategory,
+        flagColumn: 'sells_alcohol',
+        logLabel: 'local sips',
+        city: city,
+      );
+
+  /// Trusted partners in the Locally Active sport/fitness category.
+  Future<List<Map<String, dynamic>>> getLocallyActivePartners({String? city}) =>
+      _getCategoryPartners(
+        category: kLocallyActiveCategory,
+        flagColumn: 'offers_sports_activities',
+        logLabel: 'locally active',
+        city: city,
+      );
+
+  /// Food & Beverage businesses with at least one active deal.
+  Future<List<Map<String, dynamic>>> getLocalEatsPartners({String? city}) =>
+      _getCategoryPartners(
+        category: kLocalEatsCategory,
+        businessCategory: kFoodBusinessCategory,
+        logLabel: 'local eats',
+        city: city,
+      );
+
+  /// Lightweight check used to decide whether to surface the Fresh & Local
+  /// entry point on the member home screen.
+  Future<bool> hasFreshProducePartners({String? city}) async {
+    final partners = await getFreshProducePartners(city: city);
+    return partners.isNotEmpty;
+  }
+
+  /// Drives a category entry banner: whether to show it at all, and how many
+  /// qualifying deals were added since [since].
+  Future<FreshLocalSummary> _getCategorySummary({
+    required String category,
+    required List<Map<String, dynamic>> partners,
+    DateTime? since,
+    bool countAllPartnerDeals = false,
+  }) async {
+    if (partners.isEmpty) return const FreshLocalSummary();
+
+    final partnerCount = partners.length;
+    var dealCount = 0;
+    for (final partner in partners) {
+      dealCount += (partner['deal_count'] as int?) ?? 0;
+    }
+
+    if (since == null) {
+      return FreshLocalSummary(
+        hasPartners: true,
+        partnerCount: partnerCount,
+        dealCount: dealCount,
+      );
+    }
+
+    try {
+      final ownerIds = partners
+          .map((p) => p['owner_member_id'] as String?)
+          .whereType<String>()
+          .toList();
+      if (ownerIds.isEmpty) {
+        return FreshLocalSummary(
+          hasPartners: true,
+          partnerCount: partnerCount,
+          dealCount: dealCount,
+        );
+      }
+
+      var query = _supabase
+          .from('trusted_partner_discounts')
+          .select('id')
+          .inFilter('trusted_partner_id', ownerIds)
+          .eq('is_active', true);
+      if (!countAllPartnerDeals) query = query.eq('deal_category', category);
+      final rows = await query.gt(
+        'created_at',
+        since.toUtc().toIso8601String(),
+      ) as List;
+
+      return FreshLocalSummary(
+        hasPartners: true,
+        newDealCount: rows.length,
+        partnerCount: partnerCount,
+        dealCount: dealCount,
+      );
+    } catch (e) {
+      _logger.e('Failed to count new $category deals: $e');
+      return FreshLocalSummary(
+        hasPartners: true,
+        partnerCount: partnerCount,
+        dealCount: dealCount,
+      );
+    }
+  }
+
+  Future<FreshLocalSummary> getFreshLocalSummary({
+    String? city,
+    DateTime? since,
+  }) async => _getCategorySummary(
+    category: kFreshLocalCategory,
+    partners: await getFreshProducePartners(city: city),
+    since: since,
+  );
+
+  Future<FreshLocalSummary> getLocalSipsSummary({
+    String? city,
+    DateTime? since,
+  }) async => _getCategorySummary(
+    category: kLocalSipsCategory,
+    partners: await getLocalSipsPartners(city: city),
+    since: since,
+  );
+
+  Future<FreshLocalSummary> getLocallyActiveSummary({
+    String? city,
+    DateTime? since,
+  }) async => _getCategorySummary(
+    category: kLocallyActiveCategory,
+    partners: await getLocallyActivePartners(city: city),
+    since: since,
+  );
+
+  Future<FreshLocalSummary> getLocalEatsSummary({
+    String? city,
+    DateTime? since,
+  }) async => _getCategorySummary(
+    category: kLocalEatsCategory,
+    partners: await getLocalEatsPartners(city: city),
+    since: since,
+    countAllPartnerDeals: true,
+  );
+
   Future<List<Discount>> getNearbyDeals(
     String currentCity, [
     List<String>? nearbyAreas,
@@ -170,6 +476,7 @@ class DiscountService {
     String? imageUrl,
     Map<String, dynamic>? scheduleData,
     String dealCategory = 'Other',
+    bool offersDelivery = false,
     String? city,
   }) async {
     try {
@@ -195,7 +502,8 @@ class DiscountService {
         'Creating discount for business: $businessId in city: $dealCity',
       );
 
-      if (kDebugMode) print('📝 Creating discount with imageUrl: ${imageUrl ?? "NULL"}');
+      if (kDebugMode)
+        print('📝 Creating discount with imageUrl: ${imageUrl ?? "NULL"}');
 
       final response = await _supabase
           .from('trusted_partner_discounts')
@@ -219,12 +527,16 @@ class DiscountService {
             'image_url': imageUrl,
             'schedule_data': scheduleData,
             'deal_category': dealCategory,
+            'offers_delivery': offersDelivery,
             'city': dealCity,
           })
           .select()
           .single();
 
-      if (kDebugMode) print('✅ Discount created, returned imageUrl: ${response['image_url']}');
+      if (kDebugMode)
+        print(
+          '✅ Discount created, returned imageUrl: ${response['image_url']}',
+        );
 
       return Discount.fromJson(response);
     } catch (e) {
@@ -248,6 +560,7 @@ class DiscountService {
     String? imageUrl,
     Map<String, dynamic>? scheduleData,
     String? dealCategory,
+    bool? offersDelivery,
     bool? isOnceOff,
     bool updateImageUrl =
         false, // Flag to indicate imageUrl should be updated even if null
@@ -273,11 +586,13 @@ class DiscountService {
         updates['schedule_data'] = scheduleData;
       }
       if (dealCategory != null) updates['deal_category'] = dealCategory;
+      if (offersDelivery != null) updates['offers_delivery'] = offersDelivery;
       if (isOnceOff != null) updates['is_once_off'] = isOnceOff;
       // Update imageUrl even if null when explicitly requested (for deletion)
       if (updateImageUrl) {
         updates['image_url'] = imageUrl;
-        if (kDebugMode) print('🖼️ Updating image_url to: ${imageUrl ?? "NULL"}');
+        if (kDebugMode)
+          print('🖼️ Updating image_url to: ${imageUrl ?? "NULL"}');
       }
       updates['updated_at'] = DateTime.now().toUtc().toIso8601String();
 
@@ -346,13 +661,15 @@ class DiscountService {
     _activeDealsCacheTime = null;
   }
 
-  Future<List<Map<String, dynamic>>>
-  getAllActiveDiscountsWithTrustedPartners({bool forceRefresh = false}) async {
+  Future<List<Map<String, dynamic>>> getAllActiveDiscountsWithTrustedPartners({
+    bool forceRefresh = false,
+  }) async {
     // Return cached data if fresh
     if (!forceRefresh &&
         _cachedActiveDeals != null &&
         _activeDealsCacheTime != null &&
-        DateTime.now().difference(_activeDealsCacheTime!) < _activeDealsCacheTtl) {
+        DateTime.now().difference(_activeDealsCacheTime!) <
+            _activeDealsCacheTtl) {
       _logger.d('Returning ${_cachedActiveDeals!.length} cached active deals');
       return _cachedActiveDeals!;
     }
@@ -377,7 +694,9 @@ class DiscountService {
       final discountsResponse = responses[0] as List;
       final allBusinesses = responses[1] as List;
 
-      _logger.i('Fetched ${discountsResponse.length} discounts + ${allBusinesses.length} businesses in parallel');
+      _logger.i(
+        'Fetched ${discountsResponse.length} discounts + ${allBusinesses.length} businesses in parallel',
+      );
 
       if (discountsResponse.isEmpty) {
         _cachedActiveDeals = [];
@@ -415,7 +734,9 @@ class DiscountService {
         };
       }).toList();
 
-      _logger.i('Returning ${result.length} discounts with trusted partner data');
+      _logger.i(
+        'Returning ${result.length} discounts with trusted partner data',
+      );
 
       // Cache the result
       _cachedActiveDeals = result;
@@ -631,7 +952,9 @@ class DiscountService {
           final auth = DealAuthorization.fromJson(json);
           authorizations.add(auth);
         } catch (e) {
-          _logger.w('Skipping deal authorization at index $i due to parse error: $e');
+          _logger.w(
+            'Skipping deal authorization at index $i due to parse error: $e',
+          );
           _logger.w(
             'Problematic JSON keys: ${(responseList[i] as Map).keys.toList()}',
           );
@@ -680,7 +1003,8 @@ class DiscountService {
         return; // Success, exit retry loop
       } catch (e) {
         final errorStr = e.toString();
-        final isRetryable = errorStr.contains('502') ||
+        final isRetryable =
+            errorStr.contains('502') ||
             errorStr.contains('500') ||
             errorStr.contains('Bad Gateway') ||
             errorStr.contains('503') ||
@@ -696,7 +1020,9 @@ class DiscountService {
           continue;
         }
 
-        _logger.e('❌ Failed to update deal authorization status after $maxRetries attempts: $e');
+        _logger.e(
+          '❌ Failed to update deal authorization status after $maxRetries attempts: $e',
+        );
         throw Exception('Failed to update deal authorization status: $e');
       }
     }

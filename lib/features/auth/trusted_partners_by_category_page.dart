@@ -9,6 +9,7 @@ import '../../services/chat_service.dart';
 import '../chat/chat_thread_page.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:local_lekker/core/theme/app_colors.dart';
+import '../../core/constants/deal_categories.dart';
 
 class TrustedPartnersByCategoryPage extends StatefulWidget {
   final String? cityFilter;
@@ -34,16 +35,7 @@ class _TrustedPartnersByCategoryPageState
 
   // Deal category filter
   String? _selectedDealCategory;
-  static const List<String> _dealCategories = [
-    'Food and Drink',
-    'Entertainment',
-    'Grocery and necessities',
-    'Retail',
-    'Beauty',
-    'Home',
-    'Health and Fitness',
-    'Other',
-  ];
+  static const List<String> _dealCategories = kDealCategories;
 
   // City filter
   String? _selectedCityFilter;

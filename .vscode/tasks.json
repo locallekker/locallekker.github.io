@@ -1,0 +1,22 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Local Lekker web preview",
+			"type": "shell",
+			"command": "flutter",
+			"args": [
+				"run",
+				"-d",
+				"web-server",
+				"--web-hostname",
+				"127.0.0.1",
+				"--web-port",
+				"8080",
+				"--no-pub"
+			],
+			"isBackground": true,
+			"problemMatcher": []
+		}
+	]
+}

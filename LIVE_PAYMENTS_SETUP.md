@@ -1,5 +1,64 @@
 # Live Paystack Payment Configuration Guide
 
+## Google Pay through hosted Paystack checkout
+
+Paystack currently supports Google Pay for **web merchants**, including Android
+customers using supported browsers. Do not implement a native Google Pay token
+flow or assume the embedded Android WebView supports the wallet.
+
+1. In [Paystack Payments settings](https://dashboard.paystack.com/settings/payments),
+   enable **Google Pay** under **Accept payments via** and leave **Card** enabled.
+   If the option is unavailable, confirm your account's eligibility with Paystack.
+2. Set `PAYSTACK_GOOGLE_PAY_ENABLED=true` in the local/release environment used to
+   build the app. The default is `false`, preserving the existing checkout UI.
+3. On Android, the signup/subscription and deal checkout screens now offer
+   **Pay in browser**. This opens the **same initialized transaction** externally;
+   it does not create another charge. Use Chrome with an eligible Google Wallet
+   card. Paystack controls whether its Google Pay button appears.
+4. Return to the app after checkout. Existing transaction verification, webhook,
+   Realtime updates, and manual verification remain responsible for activation.
+   Opening the browser or receiving a callback is not proof of payment.
+5. For Flutter web, existing hosted-checkout redirects remain unchanged. Enabling
+   the wallet in Paystack is the relevant step; the Android flag is not required.
+
+The app keeps the Card channel enabled. Paystack's hosted checkout automatically
+surfaces eligible Google Pay payments within that channel. A separate merchant ID
+is not required for Paystack-hosted checkout; it is needed if you later render
+your own Google Pay button on your own domain. No Google Pay package or payment
+secret belongs in the Flutter client.
+
+### Subscription and renewal limitations
+
+- Signup and manual subscription payments can use the browser checkout option,
+  subject to Paystack's eligibility rules for the transaction/plan.
+- Existing saved-card deal payments and automatic subscription renewals continue
+  using Paystack authorizations, not an interactive Google Pay sheet.
+- A successful Google Pay payment alone does **not** establish that automatic
+  renewal is supported. Confirm with Paystack that the returned authorization
+  is reusable and supported for your subscription plan before promising
+  Google Pay auto-renewal. Otherwise use a supported saved card or manual renewal.
+- Review Google Play's Payments policy for the actual membership benefits:
+  payments for physical goods/services differ from digital app subscriptions.
+
+### Verification before release
+
+Use the matching Paystack test environment where Google Pay testing is supported,
+then an explicitly approved small live payment if required. Never assume test
+cards work against live keys.
+
+- With the flag disabled, confirm the original embedded card checkout is intact.
+- On Android/Chrome with an eligible Visa or Mastercard, check the hosted Google
+  Pay option for signup, manual renewal, and a new-card deal checkout.
+- Verify the exact reference, amount and currency in Paystack and confirm the
+  subscription/QR or deal is activated once in Supabase.
+- Cancel or decline payment: no subscription or deal must be activated.
+- Close the app during checkout and confirm existing recovery reconciles payment.
+- Check authorization reusability and a controlled renewal before enabling
+  unattended charging for a wallet-funded subscription.
+
+Sources: [Paystack Google Pay documentation](https://paystack.com/docs/payments/google-pay/)
+and [Google Play Payments policy](https://support.google.com/googleplay/android-developer/answer/9858738).
+
 ## Current Status: ✅ LIVE PAYMENTS ENABLED
 
 Your app is now configured for **real Paystack payments** with actual credit/debit cards and bank accounts.
@@ -11,12 +70,13 @@ Your app is now configured for **real Paystack payments** with actual credit/deb
 ### 1. Local Development Environment (`.env`)
 - **Before**: `PAYSTACK_DEVELOPMENT_MODE=true` (simulated payments)
 - **After**: `PAYSTACK_DEVELOPMENT_MODE=false` (real payments)
-- **Keys**: Using `pk_live_...` and `sk_live_...` (production keys)
+- **Keys**: The app uses public configuration only. Store `sk_live_...` as a
+  Supabase Edge Function secret, never in an environment file bundled in the app.
 
 ### 2. Release Builds (`.env.production`)
 - Created dedicated production config with:
   - `PAYSTACK_DEVELOPMENT_MODE=false`
-  - Live Paystack keys (`pk_live_...` and `sk_live_...`)
+  - Public Paystack key (`pk_live_...`); secret keys stay server-side
   - Automatically used by `build_production.sh`
 
 ### 3. Build Script (`build_production.sh`)
@@ -64,13 +124,15 @@ Your app is now configured for **real Paystack payments** with actual credit/deb
 ## How to Test Live Payments Safely
 
 ### Option 1: Use Paystack Test Cards (Recommended First)
-Even with live keys and dev mode off, you can test with Paystack's test card numbers:
+Use Paystack test keys, including the server-side test secret, for test cards.
+Keep development simulation off to exercise real test-mode verification:
 - **Test Card**: `4084084084084081`
 - **CVV**: `408`
 - **Expiry**: Any future date
 - **OTP**: `123456`
 
-These will complete successfully without real charges in the Paystack dashboard test mode.
+These are for the Paystack test environment only, not live keys. Google Pay
+testing may have separate eligibility requirements; confirm them with Paystack.
 
 ### Option 2: Use Real Cards (Small Amounts)
 - Subscribe with a real card (actual charge will occur)
@@ -183,7 +245,7 @@ Builds iOS archive in: `build/ios/iphoneos/Runner.app`
 ### Set Supabase Secret
 ```bash
 # In Supabase project settings → Edge Functions → Secrets
-# Add: PAYSTACK_SECRET_KEY = sk_live_b27efee63dc59ef7bc4b6a368548bd3c3aadc185
+# Add: PAYSTACK_SECRET_KEY = sk_live_xxxxxxxxxxxxxxxxxxxx
 ```
 
 ---

@@ -1,25 +1,85 @@
 import 'package:flutter/material.dart';
 import 'package:local_lekker/widgets/branded_app_bar.dart';
 import 'package:logger/logger.dart';
+import '../../core/constants/deal_categories.dart';
 import '../../models/discount.dart';
 import '../../models/deal_schedule.dart';
 import '../../services/discount_service.dart';
 import '../../services/supabase_service.dart';
+import '../../services/website_redirect_service.dart';
 import '../../widgets/deal_schedule_widget.dart';
+import '../../widgets/liquor_licence_warning.dart';
+import '../admin/website_redirect_deal_dialog.dart';
+import '../admin/booking_redirect_deal_dialog.dart';
 import 'package:image_picker/image_picker.dart';
 import 'dart:io';
 import 'dart:typed_data';
+
+const Color _freshLocalMenuBackground = Color(0xFFE8F5D0);
+const Color _freshLocalMenuText = Color(0xFF416D1B);
+const Color _localSipsMenuBackground = Color(0xFFF4DDE1);
+const Color _localSipsMenuText = Color(0xFF722F37);
+const Color _localEatsMenuBackground = Color(0xFFFFE2D5);
+const Color _localEatsMenuText = Color(0xFFB33D20);
+const Color _locallyActiveMenuBackground = Color(0xFFD6ECFB);
+const Color _locallyActiveMenuText = Color(0xFF01579B);
+
+DropdownMenuItem<String> _buildCategoryMenuItem(String category) {
+  final isFreshLocal = category == kFreshLocalCategory;
+  final isLocalSips = category == kLocalSipsCategory;
+  final isLocalEats = category == kLocalEatsCategory;
+  final isLocallyActive = category == kLocallyActiveCategory;
+  final isHighlighted =
+      isFreshLocal || isLocalSips || isLocalEats || isLocallyActive;
+
+  return DropdownMenuItem<String>(
+    value: category,
+    child: Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      decoration: isHighlighted
+          ? BoxDecoration(
+              color: isFreshLocal
+                  ? _freshLocalMenuBackground
+                  : isLocalSips
+                  ? _localSipsMenuBackground
+                  : isLocalEats
+                  ? _localEatsMenuBackground
+                  : _locallyActiveMenuBackground,
+              borderRadius: BorderRadius.circular(6),
+            )
+          : null,
+      child: Text(
+        category,
+        style: isHighlighted
+            ? TextStyle(
+                color: isFreshLocal
+                    ? _freshLocalMenuText
+                    : isLocalSips
+                    ? _localSipsMenuText
+                    : isLocalEats
+                    ? _localEatsMenuText
+                    : _locallyActiveMenuText,
+                fontWeight: FontWeight.w700,
+              )
+            : null,
+      ),
+    ),
+  );
+}
 
 class DiscountManagementPage extends StatefulWidget {
   /// When non-null the page manages deals for this partner (admin flow).
   final String? trustedPartnerId;
   final String? businessName;
+  final String? lockedDealCategory;
   final bool openCreateDealOnLoad;
 
   const DiscountManagementPage({
     super.key,
     this.trustedPartnerId,
     this.businessName,
+    this.lockedDealCategory,
     this.openCreateDealOnLoad = false,
   });
 
@@ -34,11 +94,23 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
   bool _isLoading = true;
   bool _isCreatingDiscount = false;
   List<Discount> _discounts = [];
+  bool _partnerCategoryLoaded = false;
+  String? _lockedDealCategory;
+  Map<String, int> _redirectClickCounts = {};
 
+  /// Admins open this page with an explicit partner id.
+  bool get _isAdminContext => widget.trustedPartnerId != null;
   @override
   void initState() {
     super.initState();
+    _lockedDealCategory = widget.lockedDealCategory;
+    _partnerCategoryLoaded = widget.lockedDealCategory != null;
     _loadDiscounts();
+    if (_isAdminContext && !_partnerCategoryLoaded) {
+      _getLockedDealCategory().then((_) {
+        if (mounted) setState(() {});
+      });
+    }
     if (widget.openCreateDealOnLoad) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
@@ -65,8 +137,17 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
       _logger.i(
         'Fetched ${discounts.length} discounts for trustedPartnerId: $trustedPartnerId',
       );
+      final clickCounts = _isAdminContext
+          ? await WebsiteRedirectService().getClickCounts(
+              discounts
+                  .where((d) => d.isWebsiteRedirect || d.isBookingRedirect)
+                  .map((d) => d.id)
+                  .toList(),
+            )
+          : <String, int>{};
       setState(() {
         _discounts = discounts;
+        _redirectClickCounts = clickCounts;
         _isLoading = false;
       });
     } catch (e) {
@@ -75,13 +156,58 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
     }
   }
 
+  Future<String?> _getLockedDealCategory() async {
+    if (_partnerCategoryLoaded) return _lockedDealCategory;
+
+    try {
+      final business = await _supabaseService.client
+          .from('businesses')
+          .select(
+            'category, sells_fresh_produce, sells_alcohol, offers_sports_activities',
+          )
+          .eq('owner_member_id', _effectivePartnerId)
+          .maybeSingle();
+      final sellsFreshProduce = business?['sells_fresh_produce'] == true;
+      final sellsAlcohol = business?['sells_alcohol'] == true;
+      final offersSportsActivities =
+          business?['offers_sports_activities'] == true;
+        final businessCategory = business?['category'] as String?;
+
+      _lockedDealCategory = sellsFreshProduce
+          ? kFreshLocalCategory
+          : sellsAlcohol
+          ? kLocalSipsCategory
+          : offersSportsActivities
+          ? kLocallyActiveCategory
+          : businessCategory == kFoodBusinessCategory
+          ? kLocalEatsCategory
+          : businessCategory == kFreshLocalCategory
+          ? kFreshLocalCategory
+          : businessCategory == kLocalSipsCategory
+          ? kLocalSipsCategory
+          : businessCategory == kLocallyActiveCategory
+          ? kLocallyActiveCategory
+          : null;
+    } catch (e) {
+      _logger.w('Could not determine partner deal category: $e');
+    } finally {
+      _partnerCategoryLoaded = true;
+    }
+
+    return _lockedDealCategory;
+  }
+
   Future<void> _addDiscount() async {
     if (_isCreatingDiscount) return;
+
+    final lockedDealCategory = await _getLockedDealCategory();
+    if (!mounted) return;
 
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (context) => AddDiscountDialog(
         trustedPartnerId: _effectivePartnerId,
+        lockedDealCategory: lockedDealCategory,
       ),
     );
     if (result != null) {
@@ -113,6 +239,7 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
           imageUrl: result['imageUrl'],
           scheduleData: result['scheduleData'],
           dealCategory: result['dealCategory'] ?? 'Other',
+          offersDelivery: result['offersDelivery'] ?? false,
         );
         await _loadDiscounts();
         if (!mounted) return;
@@ -141,11 +268,30 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
   }
 
   Future<void> _editDiscount(Discount discount) async {
+    final lockedDealCategory = await _getLockedDealCategory();
+    if (!mounted) return;
+
+    if (discount.isWebsiteRedirect) {
+      if (!_isAdminContext) return;
+      await _openWebsiteRedirectDialog(
+        existing: discount,
+        lockedDealCategory: lockedDealCategory,
+      );
+      return;
+    }
+
+    if (discount.isBookingRedirect) {
+      if (!_isAdminContext) return;
+      await _openBookingRedirectDialog(existing: discount);
+      return;
+    }
+
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (context) => EditDiscountDialog(
         discount: discount,
         trustedPartnerId: _effectivePartnerId,
+        lockedDealCategory: lockedDealCategory,
       ),
     );
 
@@ -167,6 +313,7 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
             imageUrl: result['imageUrl'],
             scheduleData: result['scheduleData'],
             dealCategory: result['dealCategory'],
+            offersDelivery: result['offersDelivery'],
             isOnceOff: result['isOnceOff'],
             updateImageUrl:
                 true, // Always update imageUrl (even if null for deletion)
@@ -191,6 +338,64 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
         );
       }
     }
+  }
+
+  Future<void> _addWebsiteRedirectDeal() async {
+    final lockedDealCategory = await _getLockedDealCategory();
+    if (!mounted) return;
+    await _openWebsiteRedirectDialog(lockedDealCategory: lockedDealCategory);
+  }
+
+  Future<void> _addBookingRedirectDeal() async {
+    await _openBookingRedirectDialog();
+  }
+
+  Future<void> _openBookingRedirectDialog({Discount? existing}) async {
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (context) => BookingRedirectDealDialog(
+        trustedPartnerId: _effectivePartnerId,
+        existing: existing,
+      ),
+    );
+    if (saved != true || !mounted) return;
+    await _loadDiscounts();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          existing == null ? 'Booking deal added' : 'Booking deal updated',
+        ),
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.only(bottom: 40, left: 16, right: 16),
+      ),
+    );
+  }
+
+  Future<void> _openWebsiteRedirectDialog({
+    Discount? existing,
+    String? lockedDealCategory,
+  }) async {
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (context) => WebsiteRedirectDealDialog(
+        trustedPartnerId: _effectivePartnerId,
+        existing: existing,
+        lockedDealCategory: lockedDealCategory,
+      ),
+    );
+    if (saved != true || !mounted) return;
+    await _loadDiscounts();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          existing == null ? 'Website deal added' : 'Website deal updated',
+        ),
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.only(bottom: 40, left: 16, right: 16),
+      ),
+    );
   }
 
   Future<void> _deleteDiscount(String discountId) async {
@@ -257,6 +462,9 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
             itemPrice: discount.itemPrice,
             percentage: discount.percentage,
             fixedAmount: discount.fixedAmount,
+            dealType: discount.dealType,
+            customData: discount.customData,
+            dealCategory: discount.dealCategory,
             isActive: !discount.isActive,
             createdAt: discount.createdAt,
             updatedAt: DateTime.now(),
@@ -307,8 +515,11 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
           return '📅 $startStr - $endStr';
         }
       } else if (schedule.type == ScheduleType.dayOfWeek) {
-        if (schedule.dayOfWeek != null) {
-          final dayName = schedule.dayOfWeek!.displayName;
+        final days = schedule.dayOfWeeks.isNotEmpty
+            ? schedule.dayOfWeeks
+            : (schedule.dayOfWeek == null ? const [] : [schedule.dayOfWeek!]);
+        if (days.isNotEmpty) {
+          final dayName = days.map((day) => day.displayName).join(', ');
           if (schedule.isRecurring) {
             return '🔄 Every $dayName';
           } else {
@@ -359,6 +570,19 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.end,
                     children: [
+                      if (_isAdminContext)
+                        IconButton(
+                          icon: const Icon(Icons.language, size: 26),
+                          tooltip: 'Add Website Deal (admin only)',
+                          onPressed: _addWebsiteRedirectDeal,
+                        ),
+                      if (_isAdminContext &&
+                          _lockedDealCategory == kLocallyActiveCategory)
+                        IconButton(
+                          icon: const Icon(Icons.sports_tennis, size: 26),
+                          tooltip: 'Add Booking Deal (admin only)',
+                          onPressed: _addBookingRedirectDeal,
+                        ),
                       IconButton(
                         icon: const Icon(Icons.add, size: 28),
                         tooltip: 'Add Deal',
@@ -394,6 +618,9 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
       itemBuilder: (context, index) {
         final discount = _discounts[index];
         final isWeightBased = discount.isWeightBased;
+        final isRedirect = discount.isWebsiteRedirect;
+        final isBooking = discount.isBookingRedirect;
+        final canManage = !(isRedirect || isBooking) || _isAdminContext;
         return Card(
           margin: const EdgeInsets.only(bottom: 12),
           child: Padding(
@@ -444,8 +671,9 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
                           ),
                           Switch(
                             value: discount.isActive,
-                            onChanged: (value) =>
-                                _toggleDiscountActive(discount),
+                            onChanged: canManage
+                                ? (value) => _toggleDiscountActive(discount)
+                                : null,
                             activeThumbColor: Colors.green,
                           ),
                         ],
@@ -463,7 +691,11 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
                       const SizedBox(height: 4),
                       // Price info
                       Text(
-                        discount.isBuyGet
+                        isRedirect
+                            ? 'Website Deal - opens partner website'
+                            : isBooking
+                            ? 'Booking Deal - opens partner booking page'
+                            : discount.isBuyGet
                             ? '${discount.customData?['buy_item_name'] ?? discount.itemName} + ${discount.customData?['free_item_name'] ?? 'Free Item'} - R${discount.dealPrice.toStringAsFixed(2)}'
                             : discount.isPercentItem
                             ? '${discount.itemName} - ${discount.percentage.toStringAsFixed(0)}% off'
@@ -478,7 +710,15 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
                         ),
                       ),
                       Text(
-                        discount.isBuyGet
+                        isRedirect
+                            ? (_isAdminContext
+                                  ? '${_redirectClickCounts[discount.id] ?? 0} website visits'
+                                  : 'Managed by Local Lekker')
+                            : isBooking
+                            ? (_isAdminContext
+                                  ? '${_redirectClickCounts[discount.id] ?? 0} booking clicks'
+                                  : 'Managed by Local Lekker')
+                            : discount.isBuyGet
                             ? 'Get ${discount.customData?['free_item_name'] ?? 'Free Item'} free (Save R${discount.savings.toStringAsFixed(2)})'
                             : discount.isPercentItem
                             ? 'Member enters item price at checkout'
@@ -535,6 +775,7 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
                       ],
                       const SizedBox(height: 8),
                       // Action buttons
+                      if (canManage)
                       Row(
                         mainAxisAlignment: MainAxisAlignment.end,
                         children: [
@@ -572,8 +813,13 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
 
 class AddDiscountDialog extends StatefulWidget {
   final String? trustedPartnerId;
+  final String? lockedDealCategory;
 
-  const AddDiscountDialog({super.key, this.trustedPartnerId});
+  const AddDiscountDialog({
+    super.key,
+    this.trustedPartnerId,
+    this.lockedDealCategory,
+  });
 
   @override
   State<AddDiscountDialog> createState() => _AddDiscountDialogState();
@@ -588,6 +834,7 @@ enum DiscountType {
   billDiscount,
   buyGet,
   percentItem,
+  freeDelivery,
 }
 
 class _AddDiscountDialogState extends State<AddDiscountDialog> {
@@ -615,7 +862,9 @@ class _AddDiscountDialogState extends State<AddDiscountDialog> {
   final _percentDiscountController = TextEditingController();
 
   DiscountType _selectedType = DiscountType.none;
+  bool _isOnceOff = false;
   String _selectedCategory = 'Other';
+  bool _offersDelivery = false;
   double _itemPrice = 0.0;
   double _calculatedDealPrice = 0.0;
   double _savings = 0.0;
@@ -642,6 +891,7 @@ class _AddDiscountDialogState extends State<AddDiscountDialog> {
   @override
   void initState() {
     super.initState();
+    _selectedCategory = widget.lockedDealCategory ?? 'Other';
     _itemPriceController.addListener(_calculateValues);
     _percentageController.addListener(_calculateValues);
     _dealPriceController.addListener(_calculateValues);
@@ -744,6 +994,27 @@ class _AddDiscountDialogState extends State<AddDiscountDialog> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      // Comes first because it unlocks the Free Delivery type.
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        value: _offersDelivery,
+                        title: const Text('Delivery available'),
+                        subtitle: const Text(
+                          'Unlocks the Free Delivery deal type and shows a '
+                          'delivery note to members',
+                        ),
+                        secondary: const Icon(Icons.delivery_dining),
+                        onChanged: (value) => setState(() {
+                          _offersDelivery = value;
+                          // Free Delivery cannot outlive the delivery option.
+                          if (!value &&
+                              _selectedType == DiscountType.freeDelivery) {
+                            _selectedType = DiscountType.none;
+                          }
+                        }),
+                      ),
+                      const SizedBox(height: 8),
+
                       // Dropdown for discount type - ALWAYS VISIBLE
                       DropdownButtonFormField<DiscountType>(
                         isExpanded: true,
@@ -752,39 +1023,41 @@ class _AddDiscountDialogState extends State<AddDiscountDialog> {
                           labelText: 'Select Discount Type',
                           border: OutlineInputBorder(),
                         ),
-                        items: const [
-                          DropdownMenuItem(
+                        items: [
+                          const DropdownMenuItem(
                             value: DiscountType.none,
                             child: Text('-- Select Type --'),
                           ),
-                          DropdownMenuItem(
+                          const DropdownMenuItem(
                             value: DiscountType.percentage,
                             child: Text('Percentage'),
                           ),
-                          DropdownMenuItem(
+                          const DropdownMenuItem(
                             value: DiscountType.fixedAmount,
                             child: Text('Fixed Amount'),
                           ),
-                          DropdownMenuItem(
-                            value: DiscountType.onceOff,
-                            child: Text('Once-Off Deal'),
-                          ),
-                          DropdownMenuItem(
+                          const DropdownMenuItem(
                             value: DiscountType.weight,
                             child: Text('Weight'),
                           ),
-                          DropdownMenuItem(
+                          const DropdownMenuItem(
                             value: DiscountType.billDiscount,
                             child: Text('Bill Discount'),
                           ),
-                          DropdownMenuItem(
+                          const DropdownMenuItem(
                             value: DiscountType.buyGet,
                             child: Text('Buy This Get That'),
                           ),
-                          DropdownMenuItem(
+                          const DropdownMenuItem(
                             value: DiscountType.percentItem,
                             child: Text('% Off Item (Manual Price)'),
                           ),
+                          // Only offered once the partner has enabled delivery.
+                          if (_offersDelivery)
+                            const DropdownMenuItem(
+                              value: DiscountType.freeDelivery,
+                              child: Text('Free Delivery (normal price)'),
+                            ),
                         ],
                         onChanged: (value) {
                           setState(() {
@@ -799,58 +1072,58 @@ class _AddDiscountDialogState extends State<AddDiscountDialog> {
                         },
                       ),
 
-                      // Deal Category dropdown - ALWAYS VISIBLE
-                      const SizedBox(height: 16),
-                      DropdownButtonFormField<String>(
-                        isExpanded: true,
-                        initialValue: _selectedCategory,
-                        decoration: const InputDecoration(
-                          labelText: 'Deal Category',
-                          hintText: 'Select a category for this deal',
-                          border: OutlineInputBorder(),
+                      CheckboxListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('Once-off deal'),
+                        subtitle: const Text(
+                          'Each member can successfully use this deal only once.',
                         ),
-                        items: const [
-                          DropdownMenuItem(
-                            value: 'Food and Drink',
-                            child: Text('Food and Drink'),
+                        value: _isOnceOff,
+                        onChanged: (value) => setState(() {
+                          _isOnceOff = value ?? false;
+                        }),
+                      ),
+
+                      // Deal Category is fixed for Fresh & Local and Local Sips partners.
+                      const SizedBox(height: 16),
+                      if (widget.lockedDealCategory != null)
+                        InputDecorator(
+                          decoration: const InputDecoration(
+                            labelText: 'Deal Category',
+                            border: OutlineInputBorder(),
                           ),
-                          DropdownMenuItem(
-                            value: 'Entertainment',
-                            child: Text('Entertainment'),
+                          child: Text(
+                            widget.lockedDealCategory!,
+                            style: const TextStyle(fontWeight: FontWeight.w700),
                           ),
-                          DropdownMenuItem(
-                            value: 'Grocery and necessities',
-                            child: Text('Grocery and necessities'),
+                        )
+                      else
+                        DropdownButtonFormField<String>(
+                          isExpanded: true,
+                          initialValue: _selectedCategory,
+                          decoration: const InputDecoration(
+                            labelText: 'Deal Category',
+                            hintText: 'Select a category for this deal',
+                            border: OutlineInputBorder(),
                           ),
-                          DropdownMenuItem(
-                            value: 'Retail',
-                            child: Text('Retail'),
-                          ),
-                          DropdownMenuItem(
-                            value: 'Beauty',
-                            child: Text('Beauty'),
-                          ),
-                          DropdownMenuItem(value: 'Home', child: Text('Home')),
-                          DropdownMenuItem(
-                            value: 'Health and Fitness',
-                            child: Text('Health and Fitness'),
-                          ),
-                          DropdownMenuItem(
-                            value: 'Other',
-                            child: Text('Other'),
-                          ),
-                        ],
-                        onChanged: (value) {
-                          setState(() {
-                            _selectedCategory = value ?? 'Other';
-                          });
-                        },
-                        validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return 'Please select a category';
-                          }
-                          return null;
-                        },
+                          items: [
+                            for (final category in kDealCategories)
+                              _buildCategoryMenuItem(category),
+                          ],
+                          onChanged: (value) {
+                            setState(() {
+                              _selectedCategory = value ?? 'Other';
+                            });
+                          },
+                          validator: (value) {
+                            if (value == null || value.isEmpty) {
+                              return 'Please select a category';
+                            }
+                            return null;
+                          },
+                        ),
+                      LiquorLicenceWarning(
+                        selectedCategory: _selectedCategory,
                       ),
 
                       // Only show fields if a type is selected
@@ -1705,8 +1978,50 @@ class _AddDiscountDialogState extends State<AddDiscountDialog> {
                           },
                         ),
 
+                        // Preview section for free delivery deals
+                        if (_selectedType == DiscountType.freeDelivery &&
+                            _itemPrice > 0) ...[
+                          const SizedBox(height: 16),
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.green.shade50,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.green.shade200),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'Deal Preview (Free Delivery):',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.green,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  '${_itemNameController.text.isEmpty ? 'Item' : _itemNameController.text}: R${_itemPrice.toStringAsFixed(2)} + free delivery',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.green,
+                                  ),
+                                ),
+                                const Text(
+                                  'Item stays at its normal price; the member pays nothing for delivery.',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.green,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+
                         // Preview section for regular deals
                         if (_selectedType != DiscountType.weight &&
+                            _selectedType != DiscountType.freeDelivery &&
                             _itemPrice > 0 &&
                             _savings > 0) ...[
                           const SizedBox(height: 16),
@@ -1903,7 +2218,14 @@ class _AddDiscountDialogState extends State<AddDiscountDialog> {
           ..._exclusions.asMap().entries.map((entry) {
             final index = entry.key;
             final exclusion = entry.value;
-            final dayOfWeek = exclusion['dayOfWeek'] ?? 'Unknown';
+            final selectedDays = (exclusion['daysOfWeek'] as List<dynamic>? ?? [])
+              .map((day) => day.toString())
+              .toList();
+            final dayLabel = exclusion['allDays'] == true
+              ? 'All days'
+              : selectedDays.isNotEmpty
+                ? selectedDays.join(', ')
+                : exclusion['dayOfWeek'] ?? 'Unknown';
             final isRecurring = exclusion['recurring'] == true;
 
             return Card(
@@ -1917,7 +2239,7 @@ class _AddDiscountDialogState extends State<AddDiscountDialog> {
                       'Amount: R${exclusion['amount']?.toStringAsFixed(2) ?? '0.00'} each',
                     ),
                     Text(
-                      '$dayOfWeek • ${isRecurring ? 'Recurring (Every week)' : 'Once off'}',
+                      '$dayLabel • ${isRecurring ? 'Recurring (Every week)' : 'Once off'}',
                       style: const TextStyle(
                         fontStyle: FontStyle.italic,
                         fontSize: 12,
@@ -1939,7 +2261,8 @@ class _AddDiscountDialogState extends State<AddDiscountDialog> {
   void _addExclusion() {
     final nameController = TextEditingController();
     final amountController = TextEditingController();
-    String? selectedDay;
+    final selectedDays = <String>{};
+    bool allDays = false;
     bool isRecurring = false;
 
     showDialog(
@@ -1970,34 +2293,52 @@ class _AddDiscountDialogState extends State<AddDiscountDialog> {
                   keyboardType: TextInputType.number,
                 ),
                 const SizedBox(height: 16),
-                DropdownButtonFormField<String>(
-                  initialValue: selectedDay,
-                  decoration: const InputDecoration(
-                    labelText: 'Day of Week',
-                    border: OutlineInputBorder(),
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Excluded on',
+                    style: TextStyle(fontWeight: FontWeight.w600),
                   ),
-                  items: const [
-                    DropdownMenuItem(value: 'Monday', child: Text('Monday')),
-                    DropdownMenuItem(value: 'Tuesday', child: Text('Tuesday')),
-                    DropdownMenuItem(
-                      value: 'Wednesday',
-                      child: Text('Wednesday'),
-                    ),
-                    DropdownMenuItem(
-                      value: 'Thursday',
-                      child: Text('Thursday'),
-                    ),
-                    DropdownMenuItem(value: 'Friday', child: Text('Friday')),
-                    DropdownMenuItem(
-                      value: 'Saturday',
-                      child: Text('Saturday'),
-                    ),
-                    DropdownMenuItem(value: 'Sunday', child: Text('Sunday')),
-                  ],
+                ),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('All days'),
+                  value: allDays,
                   onChanged: (value) {
-                    setDialogState(() => selectedDay = value);
+                    setDialogState(() {
+                      allDays = value ?? false;
+                      if (allDays) selectedDays.clear();
+                    });
                   },
                 ),
+                if (!allDays)
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    children: [
+                      'Monday',
+                      'Tuesday',
+                      'Wednesday',
+                      'Thursday',
+                      'Friday',
+                      'Saturday',
+                      'Sunday',
+                    ].map((day) {
+                      return FilterChip(
+                        label: Text(day),
+                        selected: selectedDays.contains(day),
+                        onSelected: (selected) {
+                          setDialogState(() {
+                            if (selected) {
+                              selectedDays.add(day);
+                            } else {
+                              selectedDays.remove(day);
+                            }
+                          });
+                        },
+                      );
+                    }).toList(),
+                  ),
                 const SizedBox(height: 16),
                 CheckboxListTile(
                   title: const Text('Recurring'),
@@ -2019,12 +2360,18 @@ class _AddDiscountDialogState extends State<AddDiscountDialog> {
               onPressed: () {
                 if (nameController.text.isNotEmpty &&
                     amountController.text.isNotEmpty &&
-                    selectedDay != null) {
+                    (allDays || selectedDays.isNotEmpty)) {
                   setState(() {
                     _exclusions.add({
                       'name': nameController.text.trim(),
                       'amount': double.parse(amountController.text),
-                      'dayOfWeek': selectedDay,
+                      'allDays': allDays,
+                      'daysOfWeek': selectedDays.toList(),
+                      // Keep the legacy field for existing consumers and
+                      // single-day records.
+                      'dayOfWeek': selectedDays.length == 1
+                          ? selectedDays.first
+                          : null,
                       'recurring': isRecurring,
                     });
                   });
@@ -2202,8 +2549,8 @@ class _AddDiscountDialogState extends State<AddDiscountDialog> {
       double itemPrice = 0.0;
       double percentage = 0.0;
       double? fixedAmount;
+      final bool isOnceOff = _isOnceOff || _selectedType == DiscountType.onceOff;
       bool isBillDiscount = false;
-      bool isOnceOff = false;
       String dealType = 'standard';
       Map<String, dynamic>? customData;
       bool requiresManualPrice = false;
@@ -2217,7 +2564,6 @@ class _AddDiscountDialogState extends State<AddDiscountDialog> {
         final dealPrice = double.tryParse(_dealPriceController.text) ?? 0.0;
         fixedAmount = itemPrice - dealPrice;
       } else if (_selectedType == DiscountType.onceOff) {
-        isOnceOff = true;
         itemPrice = double.tryParse(_itemPriceController.text) ?? 0.0;
         final dealPrice = double.tryParse(_dealPriceController.text) ?? 0.0;
         fixedAmount = itemPrice - dealPrice;
@@ -2247,6 +2593,11 @@ class _AddDiscountDialogState extends State<AddDiscountDialog> {
         requiresManualPrice = true;
         percentage = double.tryParse(_percentDiscountController.text) ?? 0.0;
         itemPrice = 0.0; // Will be entered by member
+      } else if (_selectedType == DiscountType.freeDelivery) {
+        // No price reduction — the delivery itself is the benefit.
+        dealType = 'free_delivery';
+        itemPrice = double.tryParse(_itemPriceController.text) ?? 0.0;
+        percentage = 0.0;
       } else if (_selectedType == DiscountType.billDiscount) {
         isBillDiscount = true;
         billDiscountData = {
@@ -2288,6 +2639,8 @@ class _AddDiscountDialogState extends State<AddDiscountDialog> {
         'imageUrl': imageUrl,
         'scheduleData': _dealSchedule?.toJson(),
         'dealCategory': _selectedCategory,
+        'offersDelivery':
+            _offersDelivery || _selectedType == DiscountType.freeDelivery,
         'dealType': dealType,
         'customData': customData,
         'requiresManualPrice': requiresManualPrice,
@@ -2309,11 +2662,13 @@ class _AddDiscountDialogState extends State<AddDiscountDialog> {
 class EditDiscountDialog extends StatefulWidget {
   final Discount discount;
   final String? trustedPartnerId;
+  final String? lockedDealCategory;
 
   const EditDiscountDialog({
     super.key,
     required this.discount,
     this.trustedPartnerId,
+    this.lockedDealCategory,
   });
 
   @override
@@ -2344,7 +2699,9 @@ class _EditDiscountDialogState extends State<EditDiscountDialog> {
   final _percentDiscountController = TextEditingController();
 
   late DiscountType _selectedType;
+  bool _isOnceOff = false;
   late String _selectedCategory; // Deal category for edit
+  late bool _offersDelivery;
   double _itemPrice = 0.0;
   double _calculatedDealPrice = 0.0;
   double _savings = 0.0;
@@ -2374,7 +2731,10 @@ class _EditDiscountDialogState extends State<EditDiscountDialog> {
     _existingImageUrl = widget.discount.imageUrl;
 
     // Initialize category from existing discount
-    _selectedCategory = widget.discount.dealCategory;
+    _selectedCategory =
+      widget.lockedDealCategory ?? widget.discount.dealCategory;
+    _offersDelivery = widget.discount.offersDelivery;
+    _isOnceOff = widget.discount.isOnceOff;
 
     // Load existing schedule data if available
     if (widget.discount.scheduleData != null) {
@@ -2400,6 +2760,8 @@ class _EditDiscountDialogState extends State<EditDiscountDialog> {
       _selectedType = DiscountType.percentItem;
       // For percentItem, the percentage is stored in the main percentage field
       _percentDiscountController.text = widget.discount.percentage.toString();
+    } else if (widget.discount.isFreeDelivery) {
+      _selectedType = DiscountType.freeDelivery;
     } else if (widget.discount.isBillDiscount) {
       _selectedType = DiscountType.billDiscount;
       // Pre-fill bill discount data
@@ -2517,6 +2879,8 @@ class _EditDiscountDialogState extends State<EditDiscountDialog> {
         key: _formKey,
         child: SingleChildScrollView(
           controller: _scrollController,
+          // Top inset stops the first field's floating label being clipped.
+          padding: const EdgeInsets.only(top: 8),
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 400),
             child: Column(
@@ -2559,53 +2923,75 @@ class _EditDiscountDialogState extends State<EditDiscountDialog> {
                       value: DiscountType.percentItem,
                       child: Text('% Off Item (Manual Price)'),
                     ),
+                    DropdownMenuItem(
+                      value: DiscountType.freeDelivery,
+                      child: Text('Free Delivery (normal price)'),
+                    ),
                   ],
                   onChanged: null, // Disabled - cannot change type
                 ),
-
-                // Deal Category dropdown
-                const SizedBox(height: 16),
-                DropdownButtonFormField<String>(
-                  isExpanded: true,
-                  initialValue: _selectedCategory,
-                  decoration: const InputDecoration(
-                    labelText: 'Deal Category',
-                    hintText: 'Select a category for this deal',
-                    border: OutlineInputBorder(),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Once-off deal'),
+                  subtitle: const Text(
+                    'Each member can successfully use this deal only once.',
                   ),
-                  items: const [
-                    DropdownMenuItem(
-                      value: 'Food and Drink',
-                      child: Text('Food and Drink'),
+                  value: _isOnceOff,
+                  onChanged: (value) => setState(() {
+                    _isOnceOff = value ?? false;
+                  }),
+                ),
+
+                // Deal Category is fixed for Fresh & Local and Local Sips partners.
+                const SizedBox(height: 16),
+                if (widget.lockedDealCategory != null)
+                  InputDecorator(
+                    decoration: const InputDecoration(
+                      labelText: 'Deal Category',
+                      border: OutlineInputBorder(),
                     ),
-                    DropdownMenuItem(
-                      value: 'Entertainment',
-                      child: Text('Entertainment'),
+                    child: Text(
+                      widget.lockedDealCategory!,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
                     ),
-                    DropdownMenuItem(
-                      value: 'Grocery and necessities',
-                      child: Text('Grocery and necessities'),
+                  )
+                else
+                  DropdownButtonFormField<String>(
+                    isExpanded: true,
+                    initialValue: _selectedCategory,
+                    decoration: const InputDecoration(
+                      labelText: 'Deal Category',
+                      hintText: 'Select a category for this deal',
+                      border: OutlineInputBorder(),
                     ),
-                    DropdownMenuItem(value: 'Retail', child: Text('Retail')),
-                    DropdownMenuItem(value: 'Beauty', child: Text('Beauty')),
-                    DropdownMenuItem(value: 'Home', child: Text('Home')),
-                    DropdownMenuItem(
-                      value: 'Health and Fitness',
-                      child: Text('Health and Fitness'),
-                    ),
-                    DropdownMenuItem(value: 'Other', child: Text('Other')),
-                  ],
-                  onChanged: (value) {
-                    setState(() {
-                      _selectedCategory = value ?? 'Other';
-                    });
-                  },
-                  validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Please select a category';
-                    }
-                    return null;
-                  },
+                    items: [
+                      for (final category in kDealCategories)
+                        _buildCategoryMenuItem(category),
+                    ],
+                    onChanged: (value) {
+                      setState(() {
+                        _selectedCategory = value ?? 'Other';
+                      });
+                    },
+                    validator: (value) {
+                      if (value == null || value.isEmpty) {
+                        return 'Please select a category';
+                      }
+                      return null;
+                    },
+                  ),
+                LiquorLicenceWarning(selectedCategory: _selectedCategory),
+
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: _offersDelivery,
+                  title: const Text('Delivery available'),
+                  subtitle: const Text(
+                    'Members will see a delivery note on this deal',
+                  ),
+                  secondary: const Icon(Icons.delivery_dining),
+                  onChanged: (value) =>
+                      setState(() => _offersDelivery = value),
                 ),
 
                 const SizedBox(height: 16),
@@ -3605,6 +3991,7 @@ class _EditDiscountDialogState extends State<EditDiscountDialog> {
       double itemPrice = 0.0;
       double percentage = 0.0;
       double? fixedAmount;
+      final bool isOnceOff = _isOnceOff;
       bool isBillDiscount = false;
       Map<String, dynamic>? billDiscountData;
 
@@ -3623,6 +4010,10 @@ class _EditDiscountDialogState extends State<EditDiscountDialog> {
         itemPrice = double.parse(_pricePerKgController.text);
         final dealPricePerKg = double.parse(_dealPricePerKgController.text);
         fixedAmount = itemPrice - dealPricePerKg;
+      } else if (_selectedType == DiscountType.freeDelivery) {
+        // No price reduction — the delivery itself is the benefit.
+        itemPrice = double.parse(_itemPriceController.text);
+        percentage = 0.0;
       } else if (_selectedType == DiscountType.billDiscount) {
         isBillDiscount = true;
         billDiscountData = {
@@ -3675,17 +4066,22 @@ class _EditDiscountDialogState extends State<EditDiscountDialog> {
         'fixedAmount': fixedAmount,
         'isWeightBased': _selectedType == DiscountType.weight,
         'isBillDiscount': isBillDiscount,
+        'isOnceOff': isOnceOff,
         'requiresManualPrice': _selectedType == DiscountType.percentItem,
         'billDiscountData': billDiscountData,
         'imageUrl': imageUrl,
         'scheduleData': _dealSchedule?.toJson(),
         'dealCategory': _selectedCategory,
+        'offersDelivery':
+            _offersDelivery || _selectedType == DiscountType.freeDelivery,
         'customData': customData,
         'dealType': _selectedType == DiscountType.buyGet
             ? 'buy_get'
             : (_selectedType == DiscountType.percentItem
                   ? 'percent_item'
-                  : null),
+                  : (_selectedType == DiscountType.freeDelivery
+                        ? 'free_delivery'
+                        : null)),
       };
       Navigator.of(context).pop(result);
     }

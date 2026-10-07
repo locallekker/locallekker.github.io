@@ -8,6 +8,7 @@ import '../../services/notification_service.dart';
 import '../auth/discount_management_page.dart';
 import 'admin_edit_partner_screen.dart';
 import 'package:local_lekker/core/theme/app_colors.dart';
+import '../../core/constants/deal_categories.dart';
 
 class AdminPartnerDetailScreen extends StatefulWidget {
   final Map<String, dynamic> partner;
@@ -306,6 +307,14 @@ class _AdminPartnerDetailScreenState extends State<AdminPartnerDetailScreen> {
   }
 
   void _openDealManagement() {
+    final lockedDealCategory = _business?['sells_fresh_produce'] == true
+        ? kFreshLocalCategory
+        : _business?['sells_alcohol'] == true
+        ? kLocalSipsCategory
+        : _business?['offers_sports_activities'] == true
+        ? kLocallyActiveCategory
+        : null;
+
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -314,6 +323,7 @@ class _AdminPartnerDetailScreenState extends State<AdminPartnerDetailScreen> {
           businessName: _business?['name'] ??
               _p['business_name'] ??
               '${_p['name'] ?? ''} ${_p['surname'] ?? ''}'.trim(),
+            lockedDealCategory: lockedDealCategory,
         ),
       ),
     );

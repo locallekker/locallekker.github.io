@@ -58,6 +58,7 @@ class _ChatThreadPageState extends State<ChatThreadPage> {
     final user = SupabaseService.instance.getCurrentUser();
     return Scaffold(
       appBar: BrandedAppBar(
+        showChatButton: false,
         title: Text(_threadTitle),
         actions: [
           IconButton(

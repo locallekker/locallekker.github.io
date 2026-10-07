@@ -1,12 +1,16 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../models/discount.dart';
 import '../../models/deal_schedule.dart';
 import '../../services/deal_authorization_service.dart';
 import '../../services/discount_service.dart';
 import '../../services/supabase_service.dart';
+import '../../services/admin_engagement_service.dart';
 import 'deal_selection_page.dart'; // Import for BillDiscountDialog
 import 'package:flutter/foundation.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../../widgets/branded_app_bar.dart';
+import '../../widgets/website_redirect_overlay.dart';
 
 class TrustedPartnerShopPage extends StatefulWidget {
   final Map<String, dynamic> partner;
@@ -195,6 +199,32 @@ class _TrustedPartnerShopPageState extends State<TrustedPartnerShopPage> {
     }
   }
 
+  void _openDeal(BuildContext context, Discount discount) {
+    if (discount.isWebsiteRedirect) {
+      openWebsiteRedirectDeal(
+        context,
+        dealId: discount.id,
+        trustedPartnerId: discount.trustedPartnerId,
+        partnerName: (widget.partner['name'] as String?) ?? 'Trusted Partner',
+        websiteUrl: widget.partner['website_url'] as String?,
+        logoUrl: widget.partner['logo_url'] as String?,
+      );
+    } else if (discount.isBookingRedirect) {
+      openBookingRedirectDeal(
+        context,
+        dealId: discount.id,
+        trustedPartnerId: discount.trustedPartnerId,
+        partnerName: (widget.partner['name'] as String?) ?? 'Trusted Partner',
+        bookingUrl: discount.bookingUrl,
+        logoUrl: widget.partner['logo_url'] as String?,
+      );
+    } else if (discount.isBillDiscount) {
+      _showBillDiscountDialog(context, discount);
+    } else {
+      _showItemDealDialog(context, discount);
+    }
+  }
+
   void _showBillDiscountDialog(BuildContext context, Discount discount) {
     // Create a deal map similar to what browse deals page uses
     final deal = discount.toJson();
@@ -214,6 +244,7 @@ class _TrustedPartnerShopPageState extends State<TrustedPartnerShopPage> {
   }
 
   void _showItemDealDialog(BuildContext context, Discount discount) {
+    unawaited(AdminEngagementService().recordDealOpen(discount.id));
     int quantity = discount.isWeightBased ? 100 : 1;
     double totalPrice = discount.isWeightBased
         ? (discount.dealPrice * quantity) / 1000
@@ -603,7 +634,7 @@ class _TrustedPartnerShopPageState extends State<TrustedPartnerShopPage> {
     }
 
     return Scaffold(
-      appBar: AppBar(
+      appBar: BrandedAppBar(
         title: Text('${widget.partner['name']} Shop'),
         actions: [
           IconButton(
@@ -705,11 +736,7 @@ class _TrustedPartnerShopPageState extends State<TrustedPartnerShopPage> {
                             borderRadius: BorderRadius.circular(14),
                             onTap: () {
                             if (discount.isActive) {
-                              if (discount.isBillDiscount) {
-                                _showBillDiscountDialog(context, discount);
-                              } else {
-                                _showItemDealDialog(context, discount);
-                              }
+                              _openDeal(context, discount);
                             } else {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
@@ -832,8 +859,83 @@ class _TrustedPartnerShopPageState extends State<TrustedPartnerShopPage> {
                                       ),
                                       const SizedBox(height: 8),
 
+                                      if (discount.offersDelivery) ...[
+                                        _buildDeliveryBadge(
+                                          isFree: discount.isFreeDelivery,
+                                        ),
+                                        const SizedBox(height: 8),
+                                      ],
+
                                       // Deal Details - Compact
-                                      if (discount.isBillDiscount)
+                                      if (discount.isWebsiteRedirect)
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 8,
+                                            vertical: 4,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: const Color(
+                                              0xFF0E5BA0,
+                                            ).withValues(alpha: 0.08),
+                                            borderRadius: BorderRadius.circular(
+                                              6,
+                                            ),
+                                          ),
+                                          child: const Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(
+                                                Icons.language,
+                                                size: 14,
+                                                color: Color(0xFF0E5BA0),
+                                              ),
+                                              SizedBox(width: 4),
+                                              Text(
+                                                'Visit Website',
+                                                style: TextStyle(
+                                                  fontSize: 12,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Color(0xFF0E5BA0),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        )
+                                      else if (discount.isBookingRedirect)
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 8,
+                                            vertical: 4,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: const Color(
+                                              0xFF0E5BA0,
+                                            ).withValues(alpha: 0.08),
+                                            borderRadius: BorderRadius.circular(
+                                              6,
+                                            ),
+                                          ),
+                                          child: const Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(
+                                                Icons.sports_tennis,
+                                                size: 14,
+                                                color: Color(0xFF0E5BA0),
+                                              ),
+                                              SizedBox(width: 4),
+                                              Text(
+                                                'Book Now',
+                                                style: TextStyle(
+                                                  fontSize: 12,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Color(0xFF0E5BA0),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        )
+                                      else if (discount.isBillDiscount)
                                         Container(
                                           padding: const EdgeInsets.symmetric(
                                             horizontal: 8,
@@ -901,6 +1003,38 @@ class _TrustedPartnerShopPageState extends State<TrustedPartnerShopPage> {
                                                 child: Text(
                                                   '${discount.percentage.toStringAsFixed(0)}% OFF',
                                                   style: const TextStyle(
+                                                    fontSize: 10,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: _kAccentGreen,
+                                                  ),
+                                                ),
+                                              ),
+                                            ] else if (discount
+                                                .isFreeDelivery) ...[
+                                              // No price reduction; the saving is the delivery.
+                                              Text(
+                                                'R${discount.itemPrice.toStringAsFixed(2)}',
+                                                style: const TextStyle(
+                                                  fontSize: 14,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: _kAccentGreen,
+                                                ),
+                                              ),
+                                              Container(
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                      horizontal: 6,
+                                                      vertical: 2,
+                                                    ),
+                                                decoration: BoxDecoration(
+                                                  color: _kAccentGreen
+                                                      .withValues(alpha: 0.2),
+                                                  borderRadius:
+                                                      BorderRadius.circular(4),
+                                                ),
+                                                child: const Text(
+                                                  'DELIVERY FREE',
+                                                  style: TextStyle(
                                                     fontSize: 10,
                                                     fontWeight: FontWeight.bold,
                                                     color: _kAccentGreen,
@@ -1006,24 +1140,22 @@ class _TrustedPartnerShopPageState extends State<TrustedPartnerShopPage> {
                                           ),
                                           if (discount.isActive)
                                             ElevatedButton.icon(
-                                              onPressed: () {
-                                                if (discount.isBillDiscount) {
-                                                  _showBillDiscountDialog(
-                                                    context,
-                                                    discount,
-                                                  );
-                                                } else {
-                                                  _showItemDealDialog(
-                                                    context,
-                                                    discount,
-                                                  );
-                                                }
-                                              },
-                                              icon: const Icon(
-                                                Icons.shopping_cart,
+                                              onPressed: () =>
+                                                  _openDeal(context, discount),
+                                              icon: Icon(
+                                                discount.isWebsiteRedirect ||
+                                                        discount.isBookingRedirect
+                                                    ? Icons.open_in_new
+                                                    : Icons.shopping_cart,
                                                 size: 14,
                                               ),
-                                              label: const Text('Request'),
+                                              label: Text(
+                                                discount.isWebsiteRedirect
+                                                    ? 'Visit'
+                                                    : discount.isBookingRedirect
+                                                    ? 'Book'
+                                                    : 'Request',
+                                              ),
                                               style: ElevatedButton.styleFrom(
                                                 backgroundColor: _kRequestGreen,
                                                 foregroundColor: Colors.white,
@@ -1055,6 +1187,32 @@ class _TrustedPartnerShopPageState extends State<TrustedPartnerShopPage> {
                       );
                     },
                   ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDeliveryBadge({bool isFree = false}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: _kRequestGreen.withValues(alpha: isFree ? 0.18 : 0.12),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: _kRequestGreen),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.delivery_dining, size: 14, color: _kRequestGreen),
+          const SizedBox(width: 4),
+          Text(
+            isFree ? 'FREE delivery' : 'This partner delivers',
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+              color: _kRequestGreen,
+            ),
           ),
         ],
       ),

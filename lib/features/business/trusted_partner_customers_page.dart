@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:logger/logger.dart';
 import '../../services/supabase_service.dart';
+import '../../widgets/branded_app_bar.dart';
 
 class TrustedPartnerCustomersPage extends StatefulWidget {
   const TrustedPartnerCustomersPage({super.key});
@@ -86,7 +87,7 @@ class _TrustedPartnerCustomersPageState
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
+      appBar: BrandedAppBar(
         title: const Text('Customers'),
         actions: [
           IconButton(

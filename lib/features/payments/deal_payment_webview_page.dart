@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:local_lekker/services/navigation_service.dart';
 import 'package:local_lekker/services/paystack_service.dart';
@@ -9,6 +10,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:logger/logger.dart';
 import 'package:flutter/foundation.dart';
 import 'package:local_lekker/widgets/branded_app_bar.dart';
+import 'package:local_lekker/widgets/browser_payment_option.dart';
 import 'package:local_lekker/core/utils/display_name_helpers.dart';
 import 'package:local_lekker/services/web_checkout.dart';
 
@@ -433,7 +435,9 @@ class _DealPaymentWebViewPageState extends State<DealPaymentWebViewPage> with Wi
         final customer = verifiedDetails['customer'];
         if (auth != null) {
           final code = auth['authorization_code'];
-          if (code != null && code.toString().isNotEmpty) {
+          if (code != null &&
+              code.toString().isNotEmpty &&
+              auth['reusable'] == true) {
             try {
               final uid = _supabase.auth.currentUser?.id;
               if (uid != null) {
@@ -459,6 +463,8 @@ class _DealPaymentWebViewPageState extends State<DealPaymentWebViewPage> with Wi
             } catch (e) {
               _logger.w('Failed to save authorization_code: $e');
             }
+          } else {
+            _logger.w('No reusable authorization found; payment will not save a card');
           }
         }
         if (customer != null) {
@@ -1703,6 +1709,8 @@ class _DealPaymentWebViewPageState extends State<DealPaymentWebViewPage> with Wi
 
                     function _llNavigate(u) {
                       if (!u || u === '' || u === 'about:blank') return;
+                      // Background cookie probe; loading it top-level kills checkout.
+                      if (u.indexOf('/cookie-support/') !== -1) return;
                       if (typeof PaystackPopup !== 'undefined') {
                         PaystackPopup.postMessage(u);
                       } else {
@@ -1831,11 +1839,21 @@ class _DealPaymentWebViewPageState extends State<DealPaymentWebViewPage> with Wi
           final url = message.message;
           if (_paymentVerified || _showingSuccess) return;
           if (!url.startsWith('http')) return;
+          if (url.contains('/cookie-support/')) return;
           _logger.i('PaystackPopup channel: loading 3DS auth URL: $url');
           _controller!.loadRequest(Uri.parse(url));
         },
-      )
-      ..loadRequest(Uri.parse(widget.authorizationUrl));
+      );
+
+    // Paystack 3DS relies on third-party cookies, which Android WebView blocks by default.
+    final platformController = _controller!.platform;
+    if (platformController is AndroidWebViewController) {
+      AndroidWebViewCookieManager(
+        const PlatformWebViewCookieManagerCreationParams(),
+      ).setAcceptThirdPartyCookies(platformController, true);
+    }
+
+    _controller!.loadRequest(Uri.parse(widget.authorizationUrl));
   }
 
   @override
@@ -1922,7 +1940,13 @@ class _DealPaymentWebViewPageState extends State<DealPaymentWebViewPage> with Wi
                   },
           ),
         ),
-        body: Stack(
+        body: Column(
+          children: [
+            if (isGooglePayBrowserCheckoutEnabled &&
+                !_processingPayment &&
+                !_showingSuccess)
+              BrowserPaymentOption(authorizationUrl: widget.authorizationUrl),
+            Expanded(child: Stack(
           children: [
             // On web there is no in-app WebViewController (checkout opened in
             // a new tab); show a waiting placeholder instead of the WebView.
@@ -2154,6 +2178,8 @@ class _DealPaymentWebViewPageState extends State<DealPaymentWebViewPage> with Wi
                   ),
                 ),
               ),
+          ],
+        )),
           ],
         ),
       ),

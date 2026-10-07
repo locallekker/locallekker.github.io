@@ -3,6 +3,7 @@ import 'package:logger/logger.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../services/admin_service.dart';
 import '../../models/admin_dashboard_model.dart';
+import 'admin_engagement_screen.dart';
 import '../auth/deal_selection_page.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:local_lekker/core/theme/app_colors.dart';
@@ -208,6 +209,23 @@ class _AdminOverviewScreenState extends State<AdminOverviewScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.insights, color: AppColors.primary),
+                title: const Text('Sales, signups & deal engagement'),
+                subtitle: const Text(
+                  'Compare partner performance and find deals to discuss or improve.',
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => const AdminEngagementScreen(),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
             // ── Metric Cards ──
             LayoutBuilder(
               builder: (context, constraints) {

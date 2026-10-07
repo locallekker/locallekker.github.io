@@ -54,6 +54,7 @@ class _AdminChatPageState extends State<AdminChatPage> {
           return Scaffold(
             appBar: BrandedAppBar(
               title: const Text('Support Chat'),
+              showChatButton: false,
               backgroundColor: Theme.of(context).primaryColor,
               foregroundColor: Colors.white,
             ),
@@ -74,6 +75,7 @@ class _AdminChatPageState extends State<AdminChatPage> {
           return Scaffold(
             appBar: BrandedAppBar(
               title: const Text('Support Chat'),
+              showChatButton: false,
               backgroundColor: Theme.of(context).primaryColor,
               foregroundColor: Colors.white,
             ),

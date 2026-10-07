@@ -8,13 +8,20 @@ import 'package:logger/logger.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../services/supabase_service.dart';
+import '../members/fresh_local_partners_page.dart';
+import '../members/local_sips_partners_page.dart';
+import '../members/local_eats_partners_page.dart';
+import '../members/locally_active_partners_page.dart';
 import '../../services/discount_service.dart';
+import '../../services/fresh_local_notice.dart';
 import '../../services/push_notification_service.dart';
 import '../../services/subscription_service.dart';
 import '../../services/savings_service.dart';
 import '../../models/discount.dart';
 import '../../widgets/custom_qr_code.dart';
 import '../../widgets/savings_summary_card.dart';
+import '../../widgets/age_verification_dialog.dart';
+import '../../widgets/member_category_banner_row.dart';
 import '../../widgets/profile_photo.dart';
 import '../members/member_receipts_page.dart';
 import 'welcome_page.dart';
@@ -30,6 +37,7 @@ import 'trusted_partners_by_category_page.dart';
 import 'admin_chat_page.dart';
 import 'widgets/trusted_partner_key_dialog.dart';
 import 'trusted_partner_inbox_page.dart';
+import 'members_home_page.dart';
 import '../../services/chat_service.dart';
 import '../business/bill_approval_page.dart';
 import 'deal_authorization_dashboard.dart';
@@ -53,7 +61,6 @@ class TrustedPartnerHomePage extends StatefulWidget {
 class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
   with TickerProviderStateMixin, WidgetsBindingObserver {
   final Logger _logger = Logger();
-  bool _isDarkMode = false;
   bool _isMemberView = false;
   MobileScannerController? _scannerController;
   bool _cameraReady = false;
@@ -102,6 +109,22 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
   int _memberAvailableDealsCount = 0;
   bool _memberCountsLoading = true;
   int _memberPendingPaymentsCount = 0;
+  bool _memberHasFreshLocalPartners = false;
+  int _memberFreshLocalNewDeals = 0;
+  int _memberFreshLocalPartnerCount = 0;
+  int _memberFreshLocalDealCount = 0;
+  bool _memberHasLocalSipsPartners = false;
+  int _memberLocalSipsNewDeals = 0;
+  int _memberLocalSipsPartnerCount = 0;
+  int _memberLocalSipsDealCount = 0;
+  bool _memberHasLocalEatsPartners = false;
+  int _memberLocalEatsNewDeals = 0;
+  int _memberLocalEatsPartnerCount = 0;
+  int _memberLocalEatsDealCount = 0;
+  bool _memberHasLocallyActivePartners = false;
+  int _memberLocallyActiveNewDeals = 0;
+  int _memberLocallyActivePartnerCount = 0;
+  int _memberLocallyActiveDealCount = 0;
   List<Map<String, dynamic>> _memberPromotions = [];
 
   // Realtime subscription for deal_authorizations
@@ -121,8 +144,24 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
   late Animation<double> _shutterAnimation;
   bool _isInitializingCamera = false;
 
-  // Check if we're on a mobile platform that supports camera
-  bool get _isMobilePlatform => !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+  // Check if we're on a mobile platform or mobile browser that supports camera
+  bool get _isMobilePlatform {
+    if (kIsWeb) {
+      return defaultTargetPlatform == TargetPlatform.iOS ||
+          defaultTargetPlatform == TargetPlatform.android;
+    }
+    return Platform.isAndroid || Platform.isIOS;
+  }
+
+  // Which UI layout to render. OS sniffing via defaultTargetPlatform is
+  // unreliable in embedded/in-app browsers (e.g. WhatsApp, some iOS Safari
+  // contexts), so on web we fall back to viewport width to decide the
+  // layout, ensuring iOS web matches the native Android mobile layout.
+  bool get _isMobileLayout {
+    if (!kIsWeb) return _isMobilePlatform;
+    if (_isMobilePlatform) return true;
+    return MediaQuery.of(context).size.width < 700;
+  }
 
   @override
   void initState() {
@@ -508,31 +547,21 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
           _buildHeaderActionGrid(isMemberMode: false),
         ],
       ),
-      body: _isMobilePlatform
+      body: _isMobileLayout
           ? _buildMobileScannerBody()
           : _buildDesktopScannerBody(),
     );
   }
 
   Widget _buildMemberViewWithToggle() {
-    // Wrap the custom TP-Member dashboard and add the toggle in the existing AppBar
-    return Scaffold(
-      backgroundColor: const Color(0xFFF6F8FB),
-      appBar: BrandedAppBar(
-        toolbarHeight: _isShortLandscapeViewport ? 68 : 100,
-        actions: [
-          _buildHeaderActionGrid(isMemberMode: true),
-        ],
-      ),
-      body: _buildTpMemberDashboardBody(),
+    return MembersHomePage(
+      isTrustedPartner: true,
+      onBackToBusiness: _toggleMemberView,
     );
   }
 
   void _toggleMemberView() {
     setState(() => _isMemberView = !_isMemberView);
-    if (_isMemberView && !_memberDashboardLoaded) {
-      _loadTpMemberDashboardData();
-    }
   }
 
   Future<void> _loadTpMemberDashboardData() async {
@@ -590,7 +619,57 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
       _loadMemberPartnerDealCounts(),
       _loadMemberPendingPaymentsCount(),
       _loadMemberPromotions(),
+      _loadMemberFreshLocalAvailability(),
     ]);
+  }
+
+  Future<void> _loadMemberFreshLocalAvailability() async {
+    final stopwatch = Stopwatch()..start();
+    final results = await Future.wait<FreshLocalSummary>([
+      Future(() async => DiscountService().getFreshLocalSummary(
+            city: _memberCity,
+            since: await FreshLocalNotice.loadLastSeen(),
+          )),
+      Future(() async => DiscountService().getLocalSipsSummary(
+            city: _memberCity,
+            since: await LocalSipsNotice.loadLastSeen(),
+          )),
+      Future(() async => DiscountService().getLocallyActiveSummary(
+            city: _memberCity,
+            since: await LocallyActiveNotice.loadLastSeen(),
+          )),
+      Future(() async => DiscountService().getLocalEatsSummary(
+        city: _memberCity,
+        since: await LocalEatsNotice.loadLastSeen(),
+          )),
+    ]);
+    final summary = results[0];
+    final sips = results[1];
+    final active = results[2];
+    final eats = results[3];
+    _logger.i(
+      'TP member category tabs loaded in ${stopwatch.elapsedMilliseconds}ms '
+      '(city: ${_memberCity ?? 'all'})',
+    );
+    if (!mounted) return;
+    setState(() {
+      _memberHasFreshLocalPartners = summary.hasPartners;
+      _memberFreshLocalNewDeals = summary.newDealCount;
+      _memberFreshLocalPartnerCount = summary.partnerCount;
+      _memberFreshLocalDealCount = summary.dealCount;
+      _memberHasLocalSipsPartners = sips.hasPartners;
+      _memberLocalSipsNewDeals = sips.newDealCount;
+      _memberLocalSipsPartnerCount = sips.partnerCount;
+      _memberLocalSipsDealCount = sips.dealCount;
+      _memberHasLocalEatsPartners = eats.hasPartners;
+      _memberLocalEatsNewDeals = eats.newDealCount;
+      _memberLocalEatsPartnerCount = eats.partnerCount;
+      _memberLocalEatsDealCount = eats.dealCount;
+      _memberHasLocallyActivePartners = active.hasPartners;
+      _memberLocallyActiveNewDeals = active.newDealCount;
+      _memberLocallyActivePartnerCount = active.partnerCount;
+      _memberLocallyActiveDealCount = active.dealCount;
+    });
   }
 
   Future<void> _loadMemberPartnerDealCounts() async {
@@ -721,10 +800,6 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
                       const SizedBox(height: 20),
                     ],
 
-                    // Trusted Partners summary card
-                    _buildTpSectionHeader('Trusted Partners'),
-                    const SizedBox(height: 8),
-                    _buildTpMemberPartnersCard(),
                     const SizedBox(height: 80),
                   ],
                 ),
@@ -736,10 +811,10 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
     );
   }
 
-  // 3-tile quick-actions row mirroring the member home (Find Deals, Receipts,
-  // Partners).
+  // Quick-actions row mirroring the member home (Find Deals, Receipts), plus
+  // the category banner row (Partners, Fresh & Local, Local Sips).
   Widget _buildTpMemberQuickActionsRow() {
-    return Row(
+    final row = Row(
       children: [
         Expanded(
           child: _buildTpMemberActionTileCompact(
@@ -760,15 +835,37 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
             onTap: _openMemberReceipts,
           ),
         ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: _buildTpMemberActionTileCompact(
-            icon: Icons.storefront_outlined,
-            label: 'Partners',
-            color: const Color(0xFF0E5BA0),
-            bgColor: const Color(0x140E5BA0),
-            onTap: _openMemberBrowseDeals,
-          ),
+      ],
+    );
+
+    return Column(
+      children: [
+        row,
+        const SizedBox(height: 10),
+        MemberCategoryBannerRow(
+          onTapPartners: _openMemberBrowseDeals,
+          partnerCount: _memberTrustedPartnersCount,
+          dealCount: _memberAvailableDealsCount,
+          showFreshLocal: _memberHasFreshLocalPartners,
+          onTapFreshLocal: _openMemberFreshLocal,
+          freshNewDeals: _memberFreshLocalNewDeals,
+          freshPartnerCount: _memberFreshLocalPartnerCount,
+          freshDealCount: _memberFreshLocalDealCount,
+          showLocalSips: _memberHasLocalSipsPartners,
+          onTapLocalSips: _openMemberLocalSips,
+          sipsNewDeals: _memberLocalSipsNewDeals,
+          sipsPartnerCount: _memberLocalSipsPartnerCount,
+          sipsDealCount: _memberLocalSipsDealCount,
+          showLocalEats: _memberHasLocalEatsPartners,
+          onTapLocalEats: _openMemberLocalEats,
+          eatsNewDeals: _memberLocalEatsNewDeals,
+          eatsPartnerCount: _memberLocalEatsPartnerCount,
+          eatsDealCount: _memberLocalEatsDealCount,
+          showLocallyActive: _memberHasLocallyActivePartners,
+          onTapLocallyActive: _openMemberLocallyActive,
+          activeNewDeals: _memberLocallyActiveNewDeals,
+          activePartnerCount: _memberLocallyActivePartnerCount,
+          activeDealCount: _memberLocallyActiveDealCount,
         ),
       ],
     );
@@ -818,80 +915,6 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
                 color: Color(0xFF0B2540),
               ),
             ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // Trusted Partners summary card mirroring the member home's gradient card.
-  Widget _buildTpMemberPartnersCard() {
-    return GestureDetector(
-      onTap: _openMemberBrowseDeals,
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          gradient: const LinearGradient(
-            colors: [Color(0xFF15803D), Color(0xFF22C55E)],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-          borderRadius: BorderRadius.circular(18),
-          boxShadow: [
-            BoxShadow(
-              color: const Color(0xFF15803D).withValues(alpha: 0.18),
-              blurRadius: 12,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.2),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: const Icon(Icons.storefront_outlined,
-                  size: 28, color: Colors.white),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Trusted Partners',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w800,
-                      color: Colors.white,
-                    ),
-                  ),
-                  const SizedBox(height: 3),
-                  _memberCountsLoading
-                      ? Text(
-                          'Loading...',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.white.withValues(alpha: 0.7),
-                          ),
-                        )
-                      : Text(
-                          '$_memberTrustedPartnersCount ${_memberTrustedPartnersCount == 1 ? 'partner' : 'partners'} · $_memberAvailableDealsCount ${_memberAvailableDealsCount == 1 ? 'deal' : 'deals'}',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.white.withValues(alpha: 0.8),
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                ],
-              ),
-            ),
-            const Icon(Icons.chevron_right_rounded,
-                color: Colors.white, size: 28),
           ],
         ),
       ),
@@ -1111,6 +1134,7 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
       context: context,
       builder: (dialogContext) => TrustedPartnerKeyDialog(
         userId: user.id,
+        isTrustedPartnerKey: true,
         onSuccess: () {
           if (!mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(
@@ -2318,6 +2342,56 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
     );
   }
 
+  void _openMemberFreshLocal() async {
+    await FreshLocalNotice.markSeen();
+    if (!mounted) return;
+    setState(() => _memberFreshLocalNewDeals = 0);
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => FreshLocalPartnersPage(cityFilter: _memberCity),
+      ),
+    );
+  }
+
+  void _openMemberLocalSips() async {
+    if (!await ensureMemberIsAgeVerified(context)) return;
+    await LocalSipsNotice.markSeen();
+    if (!mounted) return;
+    setState(() => _memberLocalSipsNewDeals = 0);
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const LocalSipsPartnersPage(),
+      ),
+    );
+  }
+
+  void _openMemberLocallyActive() async {
+    await LocallyActiveNotice.markSeen();
+    if (!mounted) return;
+    setState(() => _memberLocallyActiveNewDeals = 0);
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) =>
+            LocallyActivePartnersPage(cityFilter: _memberCity),
+      ),
+    );
+  }
+
+  void _openMemberLocalEats() async {
+    await LocalEatsNotice.markSeen();
+    if (!mounted) return;
+    setState(() => _memberLocalEatsNewDeals = 0);
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => LocalEatsPartnersPage(cityFilter: _memberCity),
+      ),
+    );
+  }
+
   Future<void> _openMemberProfile() async {
     await Navigator.push(
       context,
@@ -2588,28 +2662,10 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
         ),
       ),
       const PopupMenuItem<String>(
-        value: 'scan_bills',
-        child: ListTile(
-          leading: Icon(Icons.camera_alt),
-          title: Text('Scan Business Bills'),
-          contentPadding: EdgeInsets.zero,
-        ),
-      ),
-      const PopupMenuItem<String>(
         value: 'profile',
         child: ListTile(
           leading: Icon(Icons.person),
           title: Text('Business Profile'),
-          contentPadding: EdgeInsets.zero,
-        ),
-      ),
-      PopupMenuItem<String>(
-        value: 'theme',
-        child: ListTile(
-          leading: Icon(
-            _isDarkMode ? Icons.light_mode : Icons.dark_mode,
-          ),
-          title: Text(_isDarkMode ? 'Light Mode' : 'Dark Mode'),
           contentPadding: EdgeInsets.zero,
         ),
       ),
@@ -2842,14 +2898,8 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
       case 'approvals':
         _navigateToBillApprovals();
         break;
-      case 'scan_bills':
-        _scanBusinessBills();
-        break;
       case 'profile':
         _navigateToBusinessProfile();
-        break;
-      case 'theme':
-        _toggleTheme();
         break;
     }
   }
@@ -3804,35 +3854,6 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
     );
     // Reload discounts when returning from discount management
     _loadDiscounts();
-  }
-
-  Future<void> _scanBusinessBills() async {
-    // Bill scanning feature has been removed
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Bill scanning feature is no longer available'),
-        ),
-      );
-    }
-  }
-
-  void _toggleTheme() {
-    setState(() {
-      _isDarkMode = !_isDarkMode;
-    });
-
-    // For a complete implementation, you'd want to use a theme provider
-    // or similar state management solution to persist the theme choice
-    // and apply it throughout the entire app
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          'Theme switched to ${_isDarkMode ? 'Dark' : 'Light'} Mode',
-        ),
-        duration: const Duration(seconds: 2),
-      ),
-    );
   }
 
   Future<void> _loadDiscounts() async {

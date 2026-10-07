@@ -8,11 +8,13 @@ import '../../../services/tp_membership_service.dart';
 class TrustedPartnerKeyDialog extends StatefulWidget {
   final String userId;
   final VoidCallback onSuccess;
+  final bool isTrustedPartnerKey;
 
   const TrustedPartnerKeyDialog({
     super.key,
     required this.userId,
     required this.onSuccess,
+    this.isTrustedPartnerKey = false,
   });
 
   @override
@@ -329,6 +331,10 @@ class _TrustedPartnerKeyDialogState extends State<TrustedPartnerKeyDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final keyLabel = widget.isTrustedPartnerKey
+        ? 'Trusted Partner key'
+        : 'Promo Key';
+
     return Dialog(
       child: SingleChildScrollView(
         child: Padding(
@@ -343,10 +349,10 @@ class _TrustedPartnerKeyDialogState extends State<TrustedPartnerKeyDialog> {
                   children: [
                     const Icon(Icons.vpn_key, color: Colors.blue, size: 32),
                     const SizedBox(width: 12),
-                    const Expanded(
+                    Expanded(
                       child: Text(
-                        'Enter Promo Key',
-                        style: TextStyle(
+                        'Enter $keyLabel',
+                        style: const TextStyle(
                           fontSize: 20,
                           fontWeight: FontWeight.bold,
                         ),
@@ -359,17 +365,17 @@ class _TrustedPartnerKeyDialogState extends State<TrustedPartnerKeyDialog> {
                   ],
                 ),
                 const SizedBox(height: 16),
-                const Text(
-                  'Enter your promo key to activate your membership for free.',
-                  style: TextStyle(color: Colors.black54),
+                Text(
+                  'Enter your $keyLabel to activate your membership for free.',
+                  style: const TextStyle(color: Colors.black54),
                 ),
                 const SizedBox(height: 24),
                 TextFormField(
                   controller: _keyController,
-                  decoration: const InputDecoration(
-                    labelText: 'Promo Key',
-                    border: OutlineInputBorder(),
-                    prefixIcon: Icon(Icons.vpn_key),
+                  decoration: InputDecoration(
+                    labelText: keyLabel,
+                    border: const OutlineInputBorder(),
+                    prefixIcon: const Icon(Icons.vpn_key),
                   ),
                   textCapitalization: TextCapitalization.characters,
                   validator: (value) {

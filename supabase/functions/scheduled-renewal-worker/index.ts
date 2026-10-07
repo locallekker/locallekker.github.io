@@ -7,10 +7,10 @@
 // Auth: x-cron-secret header (set CRON_SECRET in Edge Function secrets).
 //
 // Environment variables required:
-//   SUPABASE_URL             – auto-set by Supabase
-//   SUPABASE_SERVICE_ROLE_KEY – auto-set by Supabase
-//   PAYSTACK_SECRET_KEY      – Paystack live secret key
-//   CRON_SECRET              – shared secret to authorise cron invocations
+//   SUPABASE_URL             â€“ auto-set by Supabase
+//   SUPABASE_SERVICE_ROLE_KEY â€“ auto-set by Supabase
+//   PAYSTACK_SECRET_KEY      â€“ Paystack live secret key
+//   CRON_SECRET              â€“ shared secret to authorise cron invocations
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
@@ -20,7 +20,7 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-cron-secret",
 }
 
-// ── Types ────────────────────────────────────────────────────────────
+// â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 interface DueSubscription {
   subscription_id: string
   user_id: string
@@ -44,7 +44,7 @@ interface RenewalResult {
   amount_cents?: number
 }
 
-// ── Entry point ───────────────────────────────────────────────────────
+// â”€â”€ Entry point â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders })
@@ -55,7 +55,7 @@ serve(async (req) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL")!
   const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
 
-  // ── Auth: require x-cron-secret ──────────────────────────────────
+  // â”€â”€ Auth: require x-cron-secret â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (cronSecret) {
     const incomingSecret = req.headers.get("x-cron-secret")
     if (incomingSecret !== cronSecret) {
@@ -66,7 +66,7 @@ serve(async (req) => {
       })
     }
   } else {
-    console.warn("CRON_SECRET not set — running in unsecured mode (configure for production)")
+    console.warn("CRON_SECRET not set â€” running in unsecured mode (configure for production)")
   }
 
   if (!paystackSecretKey) {
@@ -79,7 +79,7 @@ serve(async (req) => {
 
   const supabase = createClient(supabaseUrl, supabaseServiceKey)
 
-  // ── Fetch subscriptions due for renewal ──────────────────────────
+  // â”€â”€ Fetch subscriptions due for renewal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const { data: dueRows, error: fetchError } = await supabase
     .from("subscriptions_due_for_renewal")
     .select("*")
@@ -114,7 +114,7 @@ serve(async (req) => {
   )
 })
 
-// ── Renew a single subscription ───────────────────────────────────────
+// â”€â”€ Renew a single subscription â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function renewSubscription(
   supabase: any,
   paystackSecretKey: string,
@@ -127,9 +127,9 @@ async function renewSubscription(
 
   console.log(`Processing renewal for user=${user_id} sub=${subscription_id} amount=${chargeAmountCents}`)
 
-  // ── Skip if no saved card ────────────────────────────────────────
+  // â”€â”€ Skip if no saved card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (!sub.authorization_code) {
-    console.warn(`No primary card for user ${user_id} — skipping`)
+    console.warn(`No primary card for user ${user_id} â€” skipping`)
     await logRenewalResult(supabase, {
       user_id,
       subscription_id,
@@ -141,10 +141,43 @@ async function renewSubscription(
     return { user_id, subscription_id, status: "skipped", reason: "no_card" }
   }
 
-  // ── Charge via Paystack charge_authorization ─────────────────────
+  const { data: claimed, error: claimError } = await supabase.rpc(
+    "claim_subscription_renewal",
+    { p_subscription_id: subscription_id },
+  )
+  if (claimError) {
+    console.error(`Failed to claim renewal for ${subscription_id}:`, claimError.message)
+    return { user_id, subscription_id, status: "failed", reason: "claim_error" }
+  }
+  if (!claimed) {
+    console.log(`Skipping ${subscription_id}: renewal already claimed or completed`)
+    return { user_id, subscription_id, status: "skipped", reason: "already_claimed" }
+  }
+
+  // The due-subscriptions view is a snapshot. Recheck after claiming so a
+  // cancellation committed while this worker was fetching cannot be charged.
+  const { data: currentSubscription, error: currentSubscriptionError } = await supabase
+    .from("subscriptions")
+    .select("status, auto_renew, renewal_in_progress_at")
+    .eq("id", subscription_id)
+    .maybeSingle()
+  if (
+    currentSubscriptionError ||
+    currentSubscription?.status !== "active" ||
+    currentSubscription?.auto_renew !== true ||
+    !currentSubscription?.renewal_in_progress_at
+  ) {
+    await supabase.rpc("release_subscription_renewal_claim", {
+      p_subscription_id: subscription_id,
+    })
+    console.log(`Skipping ${subscription_id}: subscription was cancelled or changed`)
+    return { user_id, subscription_id, status: "skipped", reason: "cancelled_or_changed" }
+  }
+
+  // â”€â”€ Charge via Paystack charge_authorization â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const chargeEmail = sub.card_email || email
   const amountKobo = chargeAmountCents // Paystack uses kobo (ZAR cents)
-  const reference = `renewal_${subscription_id}_${Date.now()}`
+  const reference = `renewal_${subscription_id}_${new Date(sub.current_period_end).getTime()}`
 
   let paystackResponse: any
   try {
@@ -186,7 +219,7 @@ async function renewSubscription(
 
   console.log(`Paystack charge_authorization: status=${chargeStatus} ref=${chargeRef}`)
 
-  // ── Handle success ────────────────────────────────────────────────
+  // â”€â”€ Handle success â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (chargeStatus === "success") {
     await extendSubscription(supabase, sub, chargeRef)
     await logRenewalResult(supabase, {
@@ -201,9 +234,9 @@ async function renewSubscription(
     return { user_id, subscription_id, status: "success", reference: chargeRef, amount_cents: chargeAmountCents }
   }
 
-  // ── Handle pending (card 3DS / OTP required — cannot complete server-side) ─
+  // â”€â”€ Handle pending (card 3DS / OTP required â€” cannot complete server-side) â”€
   if (chargeStatus === "send_otp" || chargeStatus === "send_birthday" || chargeStatus === "open_url") {
-    console.warn(`User ${user_id} card requires interactive auth (${chargeStatus}) — cannot auto-renew`)
+    console.warn(`User ${user_id} card requires interactive auth (${chargeStatus}) â€” cannot auto-renew`)
     await logRenewalResult(supabase, {
       user_id,
       subscription_id,
@@ -216,12 +249,12 @@ async function renewSubscription(
       supabase,
       subscription_id,
       user_id,
-      "Card requires interactive authentication — please renew manually in the app",
+      "Card requires interactive authentication â€” please renew manually in the app",
     )
     return { user_id, subscription_id, status: "failed", reason: chargeStatus }
   }
 
-  // ── Handle failure ────────────────────────────────────────────────
+  // â”€â”€ Handle failure â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const failureMsg = paystackResponse?.data?.gateway_response
     || paystackResponse?.message
     || "Payment declined"
@@ -239,7 +272,7 @@ async function renewSubscription(
   return { user_id, subscription_id, status: "failed", reason: failureMsg }
 }
 
-// ── Extend subscription by 30 days and refresh QR code ───────────────
+// â”€â”€ Extend subscription by 30 days and refresh QR code â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function extendSubscription(
   supabase: any,
   sub: DueSubscription,
@@ -258,6 +291,7 @@ async function extendSubscription(
       status: "active",
       current_period_start: now.toISOString(),
       current_period_end: newPeriodEnd.toISOString(),
+      renewal_in_progress_at: null,
       updated_at: now.toISOString(),
     })
     .eq("id", sub.subscription_id)
@@ -267,7 +301,6 @@ async function extendSubscription(
     .from("profiles")
     .update({
       subscription: "active",
-      subscription_status: "active",
       updated_at: now.toISOString(),
     })
     .eq("id", sub.user_id)
@@ -303,13 +336,17 @@ async function extendSubscription(
   console.log(`Extended subscription ${sub.subscription_id} to ${newPeriodEnd.toISOString()}`)
 }
 
-// ── Mark subscription as payment_failed ───────────────────────────────
+// â”€â”€ Mark subscription as payment_failed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function markSubscriptionFailed(
   supabase: any,
   subscriptionId: string,
   userId: string,
   reason: string,
 ) {
+  await supabase.rpc("release_subscription_renewal_claim", {
+    p_subscription_id: subscriptionId,
+  })
+
   await supabase
     .from("subscriptions")
     .update({
@@ -337,7 +374,7 @@ async function markSubscriptionFailed(
   })
 }
 
-// ── Log renewal attempt to subscription_renewals ──────────────────────
+// â”€â”€ Log renewal attempt to subscription_renewals â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function logRenewalResult(
   supabase: any,
   params: {
@@ -361,7 +398,7 @@ async function logRenewalResult(
   })
 }
 
-// ── Send success notification ─────────────────────────────────────────
+// â”€â”€ Send success notification â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function notifyUser(
   supabase: any,
   userId: string,

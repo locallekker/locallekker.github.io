@@ -128,6 +128,7 @@ class _ChatListPageState extends State<ChatListPage> {
     return Scaffold(
       appBar: BrandedAppBar(
         title: const Text('Messages'),
+        showChatButton: false,
         actions: [
           IconButton(
             tooltip: 'Chat with Admin',

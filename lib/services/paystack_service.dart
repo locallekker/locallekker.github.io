@@ -1291,6 +1291,7 @@ class PaystackService {
     required String userId,
     required String userEmail,
     String? cvv,
+    String? reference,
     String paymentType = 'subscription',
     String? subaccountCode,
     Map<String, dynamic>? extraMetadata,
@@ -1313,8 +1314,8 @@ class PaystackService {
         'email': userEmail,
         'amount': (amount * 100).round(), // Convert to kobo
         'currency': 'ZAR',
-        'reference':
-            'charge_${userId}_${DateTime.now().millisecondsSinceEpoch}',
+        'reference': reference ??
+          'charge_${userId}_${DateTime.now().millisecondsSinceEpoch}',
         'metadata': {
           'user_id': userId,
           'payment_type': paymentType,

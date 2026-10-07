@@ -4,6 +4,7 @@ class DealSchedule {
   final DateTime? startDate;
   final DateTime? endDate;
   final DayOfWeek? dayOfWeek;
+  final List<DayOfWeek> dayOfWeeks;
   final bool isRecurring;
 
   DealSchedule({
@@ -11,6 +12,7 @@ class DealSchedule {
     this.startDate,
     this.endDate,
     this.dayOfWeek,
+    this.dayOfWeeks = const [],
     this.isRecurring = false,
   });
 
@@ -20,11 +22,26 @@ class DealSchedule {
       'start_date': startDate?.toIso8601String(),
       'end_date': endDate?.toIso8601String(),
       'day_of_week': dayOfWeek?.index,
+      'day_of_weeks': dayOfWeeks.map((day) => day.index).toList(),
       'is_recurring': isRecurring,
     };
   }
 
   factory DealSchedule.fromJson(Map<String, dynamic> json) {
+    final rawDays = json['day_of_weeks'];
+    final parsedDays = rawDays is List
+      ? rawDays
+        .whereType<num>()
+        .where((index) => index >= 0 && index < DayOfWeek.values.length)
+        .map((index) => DayOfWeek.values[index.toInt()])
+        .toList()
+      : <DayOfWeek>[];
+    final legacyDay = json['day_of_week'] is num &&
+        (json['day_of_week'] as num).toInt() >= 0 &&
+        (json['day_of_week'] as num).toInt() < DayOfWeek.values.length
+      ? DayOfWeek.values[(json['day_of_week'] as num).toInt()]
+      : null;
+
     return DealSchedule(
       type: ScheduleType.values.firstWhere(
         (e) => e.name == json['type'],
@@ -36,9 +53,10 @@ class DealSchedule {
       endDate: json['end_date'] != null
           ? DateTime.parse(json['end_date'])
           : null,
-      dayOfWeek: json['day_of_week'] != null
-          ? DayOfWeek.values[json['day_of_week']]
-          : null,
+        dayOfWeek: legacyDay,
+        dayOfWeeks: parsedDays.isNotEmpty
+          ? parsedDays
+          : (legacyDay == null ? const [] : [legacyDay]),
       isRecurring: json['is_recurring'] ?? false,
     );
   }
@@ -62,8 +80,11 @@ class DealSchedule {
         return isAfterStart && isBeforeEnd;
 
       case ScheduleType.dayOfWeek:
-        if (dayOfWeek == null) return true;
-        return now.weekday - 1 == dayOfWeek!.index;
+        final selectedDays = dayOfWeeks.isNotEmpty
+            ? dayOfWeeks
+            : (dayOfWeek == null ? const <DayOfWeek>[] : [dayOfWeek!]);
+        if (selectedDays.isEmpty) return true;
+        return selectedDays.any((day) => now.weekday - 1 == day.index);
     }
   }
 }

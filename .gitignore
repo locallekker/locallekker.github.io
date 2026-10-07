@@ -58,3 +58,6 @@ app.*.map.json
 # Large local dev tools / downloadable speech models (regenerable, not source)
 .tools/vosk-model-*/
 .tools/*.zip
+
+# Local release artifacts
+release_backups/

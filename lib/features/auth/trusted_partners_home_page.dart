@@ -13,6 +13,7 @@ import 'discount_management_page.dart';
 import 'discount_selection_page.dart';
 import '../business/bill_approval_page.dart';
 import 'deal_authorization_dashboard.dart';
+import '../../widgets/branded_app_bar.dart';
 import 'package:flutter/foundation.dart';
 
 class TrustedPartnerHomePage extends StatefulWidget {
@@ -24,7 +25,6 @@ class TrustedPartnerHomePage extends StatefulWidget {
 
 class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
     with SingleTickerProviderStateMixin {
-  bool _isDarkMode = false;
   final MobileScannerController _scannerController = MobileScannerController();
   final DiscountService _discountService = DiscountService();
   List<Discount> _discounts = [];
@@ -39,8 +39,14 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
 
-  // Check if we're on a mobile platform that supports camera
-  bool get _isMobilePlatform => Platform.isAndroid || Platform.isIOS;
+  // Check if we're on a mobile platform or mobile browser that supports camera
+  bool get _isMobilePlatform {
+    if (kIsWeb) {
+      return defaultTargetPlatform == TargetPlatform.iOS ||
+          defaultTargetPlatform == TargetPlatform.android;
+    }
+    return Platform.isAndroid || Platform.isIOS;
+  }
 
   @override
   void initState() {
@@ -113,7 +119,7 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
+      appBar: BrandedAppBar(
         toolbarHeight: 100,
         title: Image.asset('assets/locallekker_logo.png', height: 200),
         actions: [
@@ -138,16 +144,6 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
                 child: ListTile(
                   leading: Icon(Icons.person),
                   title: Text('Business Profile'),
-                  contentPadding: EdgeInsets.zero,
-                ),
-              ),
-              PopupMenuItem<String>(
-                value: 'theme',
-                child: ListTile(
-                  leading: Icon(
-                    _isDarkMode ? Icons.light_mode : Icons.dark_mode,
-                  ),
-                  title: Text(_isDarkMode ? 'Light Mode' : 'Dark Mode'),
                   contentPadding: EdgeInsets.zero,
                 ),
               ),
@@ -178,9 +174,6 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
         break;
       case 'profile':
         _navigateToBusinessProfile();
-        break;
-      case 'theme':
-        _toggleTheme();
         break;
     }
   }
@@ -236,24 +229,6 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
       MaterialPageRoute(
         builder: (context) =>
             DiscountSelectionPage(userName: name, userSurname: surname),
-      ),
-    );
-  }
-
-  void _toggleTheme() {
-    setState(() {
-      _isDarkMode = !_isDarkMode;
-    });
-
-    // For a complete implementation, you'd want to use a theme provider
-    // or similar state management solution to persist the theme choice
-    // and apply it throughout the entire app
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          'Theme switched to ${_isDarkMode ? 'Dark' : 'Light'} Mode',
-        ),
-        duration: const Duration(seconds: 2),
       ),
     );
   }

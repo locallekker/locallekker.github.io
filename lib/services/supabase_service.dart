@@ -1,4 +1,5 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import 'package:logger/logger.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter/foundation.dart';
@@ -42,6 +43,9 @@ class SupabaseService {
   // column read fails for any other transient reason. Prevents the loop where
   // the user accepts terms but is bounced back to the terms page.
   final Set<String> _memberTermsAcceptedCache = <String>{};
+
+  // Same idea for the Local Sips 18+ confirmation.
+  final Set<String> _ageVerifiedCache = <String>{};
 
   // In-memory cache of resolved user roles keyed by userId. A user's role does
   // not change within a single app session, so caching it avoids repeating the
@@ -197,6 +201,64 @@ class SupabaseService {
     }
   }
 
+  /// Sign in (or silently create an account for) a member using their Google
+  /// account. Reuses the SAME Supabase auth session/profile pipeline as
+  /// email/password sign-in — callers must still route through
+  /// NavigationService().getInitialScreen() afterwards so profile-completion,
+  /// terms and subscription checks run exactly as they do today.
+  Future<AuthResponse> signInWithGoogle() async {
+    final webClientId = dotenv.env['GOOGLE_WEB_CLIENT_ID'];
+    if (webClientId == null || webClientId.isEmpty) {
+      throw Exception(
+        'Google sign-in is not configured yet. Please try another sign-in method.',
+      );
+    }
+
+    try {
+      // clientId is used on Web, serverClientId is used on Android/iOS so the
+      // native Google ID token is minted for this same OAuth client's audience
+      // (must match the Client ID configured in Supabase's Google provider).
+      final googleSignIn = GoogleSignIn(
+        clientId: webClientId,
+        serverClientId: webClientId,
+      );
+
+      // Force the account picker instead of silently reusing a stale session.
+      await googleSignIn.signOut();
+
+      final googleUser = await googleSignIn.signIn();
+      if (googleUser == null) {
+        throw Exception('Google sign-in was cancelled.');
+      }
+
+      final googleAuth = await googleUser.authentication;
+      final idToken = googleAuth.idToken;
+      if (idToken == null) {
+        throw Exception(
+          'Could not retrieve Google credentials. Please try again.',
+        );
+      }
+
+      _logger.i(
+        'SupabaseService: Signing in with Google for ${googleUser.email}',
+      );
+
+      final response = await client.auth.signInWithIdToken(
+        provider: OAuthProvider.google,
+        idToken: idToken,
+        accessToken: googleAuth.accessToken,
+      );
+
+      _logger.i(
+        'SupabaseService: Google sign-in successful, user: ${response.user?.id}',
+      );
+      return response;
+    } catch (e) {
+      _logger.e('SupabaseService: Google sign-in failed: $e');
+      rethrow;
+    }
+  }
+
   Future<void> signOut() async {
     _logger.i('SupabaseService: Signing out, clearing all local caches');
     try {
@@ -215,6 +277,7 @@ class SupabaseService {
       _logger.w('SupabaseService: Error clearing payment status on signOut: $e');
     }
     _memberTermsAcceptedCache.clear();
+    _ageVerifiedCache.clear();
     _userRoleCache.clear();
     // A global sign-out makes a network call to revoke the refresh token. If the
     // device is offline (e.g. "Failed host lookup" / SocketException), that call
@@ -2253,6 +2316,44 @@ class SupabaseService {
     } catch (e) {
       _logger.e('hasMemberAcceptedTerms error: $e');
       // On error, be safe and treat as not accepted (forces re-prompt)
+      return false;
+    }
+  }
+
+  /// Record the member's 18+ self-confirmation (Local Sips age gate).
+  Future<bool> confirmMemberAge18(String userId) async {
+    try {
+      final result = await client.rpc(
+        'confirm_member_age_18',
+        params: {'p_user_id': userId},
+      );
+      final confirmed = result == true;
+      if (confirmed) {
+        _ageVerifiedCache.add(userId);
+      } else {
+        _logger.w('confirmMemberAge18: RPC returned $result for $userId');
+      }
+      return confirmed;
+    } catch (e) {
+      _logger.e('confirmMemberAge18 error: $e');
+      return false;
+    }
+  }
+
+  /// True when the member has already confirmed they are 18 or older.
+  Future<bool> isMemberAgeVerified(String userId) async {
+    if (_ageVerifiedCache.contains(userId)) return true;
+    try {
+      final res = await client
+          .from('profiles')
+          .select('age_verified_18')
+          .eq('id', userId)
+          .maybeSingle();
+      final verified = res?['age_verified_18'] == true;
+      if (verified) _ageVerifiedCache.add(userId);
+      return verified;
+    } catch (e) {
+      _logger.e('isMemberAgeVerified error: $e');
       return false;
     }
   }

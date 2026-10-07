@@ -239,6 +239,12 @@ class _WelcomePageState extends State<WelcomePage> {
               onPressed: () => _showOtpSigninDialog(context),
               child: const Text('Sign In with OTP'),
             ),
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              onPressed: () => _handleGoogleSignIn(context),
+              icon: const Icon(Icons.g_mobiledata, size: 28),
+              label: const Text('Continue with Google'),
+            ),
             const SizedBox(height: 20),
             // Show sign out button if user is already signed in
             Builder(
@@ -288,6 +294,37 @@ class _WelcomePageState extends State<WelcomePage> {
         ),
       ),
     );
+  }
+
+  /// "Continue with Google" — additive alternative to email/password sign-in.
+  /// Feeds into the exact same downstream flow (profile completion, member
+  /// terms, subscription/payment gating) via _startSmoothSignInTransition, so
+  /// nothing about the existing signup/payment pipeline changes.
+  Future<void> _handleGoogleSignIn(BuildContext context) async {
+    try {
+      final response = await SupabaseService.instance.signInWithGoogle();
+      final user = response.user;
+      if (user == null) return;
+
+      // Safe no-op upsert if a profile row already exists for this user.
+      try {
+        await SupabaseService.instance.createInitialUserProfile();
+      } catch (e) {
+        if (kDebugMode) {
+          print('🔐 WelcomePage: createInitialUserProfile after Google sign-in failed: $e');
+        }
+      }
+
+      if (!context.mounted) return;
+      await _startSmoothSignInTransition(context, context, user.id);
+    } catch (e) {
+      if (!context.mounted) return;
+      final message = e.toString().replaceAll('Exception: ', '');
+      if (message.toLowerCase().contains('cancelled')) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Google sign-in failed: $message')),
+      );
+    }
   }
 
   void _showSignupDialog(BuildContext context) {

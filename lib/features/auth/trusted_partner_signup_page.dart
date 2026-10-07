@@ -251,19 +251,36 @@ class _TrustedPartnerSignupPageState extends State<TrustedPartnerSignupPage> {
         ),
       );
       widgets.add(
-        TextFormField(
-          controller: addr['city'],
-          decoration: const InputDecoration(labelText: 'City'),
+        DropdownButtonFormField<String>(
+          initialValue: addr['province']!.text.isEmpty
+              ? null
+              : addr['province']!.text,
+          decoration: const InputDecoration(labelText: 'Province'),
+          items: _provinces
+              .map((p) => DropdownMenuItem(value: p, child: Text(p)))
+              .toList(),
+          onChanged: (value) {
+            setState(() {
+              addr['province']!.text = value ?? '';
+              addr['city']!.clear();
+            });
+          },
           validator: (value) =>
-              value?.isEmpty ?? true ? 'Please enter city' : null,
+              value == null ? 'Please select a province' : null,
         ),
       );
       widgets.add(
-        TextFormField(
-          controller: addr['province'],
-          decoration: const InputDecoration(labelText: 'Province'),
-          validator: (value) =>
-              value?.isEmpty ?? true ? 'Please enter province' : null,
+        DropdownButtonFormField<String>(
+          key: ValueKey('additional_city_${i}_${addr['province']!.text}'),
+          initialValue: addr['city']!.text.isEmpty ? null : addr['city']!.text,
+          decoration: const InputDecoration(labelText: 'City'),
+          items:
+              (_citiesByProvince[addr['province']!.text] ?? const <String>[])
+                  .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                  .toList(),
+          onChanged: (value) =>
+              setState(() => addr['city']!.text = value ?? ''),
+          validator: (value) => value == null ? 'Please select a city' : null,
         ),
       );
     }

@@ -797,6 +797,7 @@ class SubscriptionService {
 
   /// Process subscription renewal using the primary payment method
   Future<bool> processSubscriptionRenewal(String userId) async {
+    String? claimedSubscriptionId;
     try {
       if (kDebugMode) {
         print(
@@ -833,7 +834,7 @@ class SubscriptionService {
       final subscriptionPlan = profile['subscription_plan'] as String?;
       final currentSubscription = await _client
           .from('subscriptions')
-          .select('plan_type, renewal_charge_cents')
+          .select('id, current_period_end, plan_type, renewal_charge_cents')
           .eq('user_id', userId)
           .order('created_at', ascending: false)
           .limit(1)
@@ -845,6 +846,28 @@ class SubscriptionService {
       final renewalChargeCents =
           (currentSubscription?['renewal_charge_cents'] as int?) ?? 9900;
       final amount = renewalChargeCents / 100;
+      final subscriptionId = currentSubscription?['id'] as String?;
+      final currentPeriodEnd = currentSubscription?['current_period_end'] as String?;
+
+      if (subscriptionId == null || currentPeriodEnd == null) {
+        return false;
+      }
+
+      final claimed = await _client.rpc(
+        'claim_subscription_renewal',
+        params: {'p_subscription_id': subscriptionId},
+      ) as bool? ?? false;
+
+      if (!claimed) {
+        if (kDebugMode) {
+          print('[processSubscriptionRenewal] Renewal already claimed or completed');
+        }
+        return false;
+      }
+      claimedSubscriptionId = subscriptionId;
+
+      final renewalReference =
+          'renewal_${subscriptionId}_${DateTime.parse(currentPeriodEnd).millisecondsSinceEpoch}';
 
       if (kDebugMode) {
         print(
@@ -857,6 +880,12 @@ class SubscriptionService {
         amount: amount,
         userId: userId,
         userEmail: userEmail,
+        reference: renewalReference,
+        paymentType: 'subscription_renewal',
+        extraMetadata: {
+          'subscription_id': subscriptionId,
+          'billing_period_end': currentPeriodEnd,
+        },
       );
 
       if (success == 'success') {
@@ -916,6 +945,7 @@ class SubscriptionService {
           'status': 'active',
           'auto_renew': true,
           'renewal_charge_cents': renewalChargeCents,
+          'renewal_in_progress_at': null,
           'updated_at': now.toIso8601String(),
         };
 
@@ -979,12 +1009,26 @@ class SubscriptionService {
         }
         return true;
       } else {
+        await _client.rpc(
+          'release_subscription_renewal_claim',
+          params: {'p_subscription_id': subscriptionId},
+        );
         if (kDebugMode) {
           print('[processSubscriptionRenewal] Payment failed');
         }
         return false;
       }
     } catch (e) {
+      if (claimedSubscriptionId != null) {
+        try {
+          await _client.rpc(
+            'release_subscription_renewal_claim',
+            params: {'p_subscription_id': claimedSubscriptionId},
+          );
+        } catch (_) {
+          // The stale-claim timeout remains the fallback after a crash.
+        }
+      }
       if (kDebugMode) {
         print('[processSubscriptionRenewal] Error: $e');
       }

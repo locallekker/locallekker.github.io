@@ -23,6 +23,7 @@ class _DealScheduleWidgetState extends State<DealScheduleWidget> {
   DateTime? _startDate;
   DateTime? _endDate;
   DayOfWeek? _selectedDay;
+  final Set<DayOfWeek> _selectedDays = <DayOfWeek>{};
   bool _isRecurring = false;
 
   @override
@@ -34,6 +35,13 @@ class _DealScheduleWidgetState extends State<DealScheduleWidget> {
       _startDate = widget.initialSchedule!.startDate;
       _endDate = widget.initialSchedule!.endDate;
       _selectedDay = widget.initialSchedule!.dayOfWeek;
+      _selectedDays.addAll(
+        widget.initialSchedule!.dayOfWeeks.isNotEmpty
+            ? widget.initialSchedule!.dayOfWeeks
+            : (widget.initialSchedule!.dayOfWeek == null
+                ? const <DayOfWeek>[]
+                : [widget.initialSchedule!.dayOfWeek!]),
+      );
       _isRecurring = widget.initialSchedule!.isRecurring;
     }
   }
@@ -48,7 +56,10 @@ class _DealScheduleWidgetState extends State<DealScheduleWidget> {
       type: _scheduleType,
       startDate: _startDate,
       endDate: _endDate,
-      dayOfWeek: _selectedDay,
+        dayOfWeek: _selectedDays.length == 1
+          ? _selectedDays.first
+          : _selectedDay,
+        dayOfWeeks: _selectedDays.toList(),
       isRecurring: _isRecurring,
     );
     widget.onScheduleChanged(schedule);
@@ -89,6 +100,7 @@ class _DealScheduleWidgetState extends State<DealScheduleWidget> {
                     setState(() {
                       _scheduleType = ScheduleType.dateRange;
                       _selectedDay = null;
+                      _selectedDays.clear();
                       _isRecurring = false;
                       _notifyChange();
                     });
@@ -208,31 +220,37 @@ class _DealScheduleWidgetState extends State<DealScheduleWidget> {
           style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
         ),
         const SizedBox(height: 12),
-        DropdownButtonFormField<DayOfWeek>(
-          initialValue: _selectedDay,
-          decoration: const InputDecoration(
-            labelText: 'Day',
-            border: OutlineInputBorder(),
-            prefixIcon: Icon(Icons.calendar_today),
-          ),
-          items: DayOfWeek.values.map((day) {
-            return DropdownMenuItem(value: day, child: Text(day.displayName));
+        Wrap(
+          spacing: 6,
+          runSpacing: 4,
+          children: DayOfWeek.values.map((day) {
+            return FilterChip(
+              label: Text(day.displayName),
+              selected: _selectedDays.contains(day),
+              onSelected: (selected) {
+                setState(() {
+                  if (selected) {
+                    _selectedDays.add(day);
+                  } else {
+                    _selectedDays.remove(day);
+                  }
+                  _selectedDay = _selectedDays.length == 1
+                      ? _selectedDays.first
+                      : null;
+                  _notifyChange();
+                });
+              },
+            );
           }).toList(),
-          onChanged: (value) {
-            setState(() {
-              _selectedDay = value;
-              _notifyChange();
-            });
-          },
         ),
-        if (_selectedDay != null) ...[
+        if (_selectedDays.isNotEmpty) ...[
           const SizedBox(height: 16),
           CheckboxListTile(
             title: const Text('Recurring'),
             subtitle: Text(
               _isRecurring
-                  ? 'Deal available every ${_selectedDay!.displayName}'
-                  : 'Deal available only on the next ${_selectedDay!.displayName}',
+                  ? 'Deal available every selected day'
+                  : 'Deal available only on the selected day(s)',
             ),
             value: _isRecurring,
             onChanged: (value) {

@@ -20,6 +20,11 @@ enabled = true
 verify_jwt = false
 entrypoint = "./functions/scheduled-renewal-worker/index.ts"
 
+[functions.scheduled-payment-reconciliation-worker]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/scheduled-payment-reconciliation-worker/index.ts"
+
 [functions.pending-member-signup-reminder]
 enabled = true
 verify_jwt = false
@@ -29,3 +34,8 @@ entrypoint = "./functions/pending-member-signup-reminder/index.ts"
 enabled = true
 verify_jwt = false
 entrypoint = "./functions/open-local-lekker/index.ts"
+
+[functions.send-admin-created-tp-email]
+enabled = true
+verify_jwt = true
+entrypoint = "./functions/send-admin-created-tp-email/index.ts"

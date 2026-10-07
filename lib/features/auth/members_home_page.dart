@@ -9,6 +9,8 @@ import '../../services/deal_approval_popup_service.dart';
 import '../../services/savings_service.dart';
 import '../../services/cache_service.dart';
 import '../../services/qr_code_service.dart';
+import '../../services/discount_service.dart';
+import '../../services/fresh_local_notice.dart';
 import '../../models/notification.dart';
 import '../../widgets/custom_qr_code.dart';
 import '../../widgets/savings_summary_card.dart';
@@ -19,6 +21,10 @@ import '../../services/chat_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' show RealtimeChannel;
 import 'deal_selection_page.dart';
 import '../members/member_receipts_page.dart';
+import '../members/fresh_local_partners_page.dart';
+import '../members/local_sips_partners_page.dart';
+import '../members/local_eats_partners_page.dart';
+import '../members/locally_active_partners_page.dart';
 import 'trusted_partners_by_category_page.dart';
 import '../payments/pending_payments_page.dart';
 import 'widgets/trusted_partner_key_dialog.dart';
@@ -30,6 +36,8 @@ import 'package:local_lekker/core/theme/app_colors.dart';
 import 'package:screen_protector/screen_protector.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' show FileOptions, RealtimeChannel;
 import '../../widgets/profile_photo.dart';
+import '../../widgets/age_verification_dialog.dart';
+import '../../widgets/member_category_banner_row.dart';
 import 'welcome_page.dart';
 
 class MembersHomePage extends StatefulWidget {
@@ -37,6 +45,7 @@ class MembersHomePage extends StatefulWidget {
   final bool isTrustedPartner;
   final double embeddedTopPadding;
   final bool hideEmbeddedHero;
+  final VoidCallback? onBackToBusiness;
 
   const MembersHomePage({
     super.key,
@@ -44,6 +53,7 @@ class MembersHomePage extends StatefulWidget {
     this.isTrustedPartner = false,
     this.embeddedTopPadding = 0,
     this.hideEmbeddedHero = false,
+    this.onBackToBusiness,
   });
 
   @override
@@ -121,6 +131,22 @@ class _MembersHomePageState extends State<MembersHomePage>
   String? _selectedProvince;
   String? _selectedCity;
   bool _isLoadingCities = true;
+  bool _hasFreshLocalPartners = false;
+  int _freshLocalNewDeals = 0;
+  int _freshLocalPartnerCount = 0;
+  int _freshLocalDealCount = 0;
+  bool _hasLocalSipsPartners = false;
+  int _localSipsNewDeals = 0;
+  int _localSipsPartnerCount = 0;
+  int _localSipsDealCount = 0;
+  bool _hasLocalEatsPartners = false;
+  int _localEatsNewDeals = 0;
+  int _localEatsPartnerCount = 0;
+  int _localEatsDealCount = 0;
+  bool _hasLocallyActivePartners = false;
+  int _locallyActiveNewDeals = 0;
+  int _locallyActivePartnerCount = 0;
+  int _locallyActiveDealCount = 0;
 
   static const Map<String, List<String>> _citiesByProvince = {
     'Eastern Cape': [
@@ -261,6 +287,7 @@ class _MembersHomePageState extends State<MembersHomePage>
     _loadTrustedPartnersCount();
     _loadPendingPaymentsCount();
     _loadMemberCityProvince();
+    _loadFreshLocalAvailability();
     _loadActivePromotions();
     _subscribeToApprovalNotifications();
     _loadUnreadChatCount();
@@ -1158,6 +1185,106 @@ class _MembersHomePageState extends State<MembersHomePage>
     }
   }
 
+  Future<void> _loadFreshLocalAvailability() async {
+    final stopwatch = Stopwatch()..start();
+    final results = await Future.wait<FreshLocalSummary>([
+      Future(() async => DiscountService().getFreshLocalSummary(
+            city: _selectedCity,
+            since: await FreshLocalNotice.loadLastSeen(),
+          )),
+      Future(() async => DiscountService().getLocalSipsSummary(
+            city: _selectedCity,
+            since: await LocalSipsNotice.loadLastSeen(),
+          )),
+      Future(() async => DiscountService().getLocallyActiveSummary(
+            city: _selectedCity,
+            since: await LocallyActiveNotice.loadLastSeen(),
+          )),
+      Future(() async => DiscountService().getLocalEatsSummary(
+        city: _selectedCity,
+        since: await LocalEatsNotice.loadLastSeen(),
+          )),
+    ]);
+    final summary = results[0];
+    final sips = results[1];
+    final active = results[2];
+    final eats = results[3];
+    if (kDebugMode) {
+      debugPrint(
+        'Member category tabs loaded in ${stopwatch.elapsedMilliseconds}ms '
+        '(city: ${_selectedCity ?? 'all'})',
+      );
+    }
+    if (!mounted) return;
+    setState(() {
+      _hasFreshLocalPartners = summary.hasPartners;
+      _freshLocalNewDeals = summary.newDealCount;
+      _freshLocalPartnerCount = summary.partnerCount;
+      _freshLocalDealCount = summary.dealCount;
+      _hasLocalSipsPartners = sips.hasPartners;
+      _localSipsNewDeals = sips.newDealCount;
+      _localSipsPartnerCount = sips.partnerCount;
+      _localSipsDealCount = sips.dealCount;
+      _hasLocalEatsPartners = eats.hasPartners;
+      _localEatsNewDeals = eats.newDealCount;
+      _localEatsPartnerCount = eats.partnerCount;
+      _localEatsDealCount = eats.dealCount;
+      _hasLocallyActivePartners = active.hasPartners;
+      _locallyActiveNewDeals = active.newDealCount;
+      _locallyActivePartnerCount = active.partnerCount;
+      _locallyActiveDealCount = active.dealCount;
+    });
+  }
+
+  Future<void> _openLocallyActive() async {
+    await LocallyActiveNotice.markSeen();
+    if (!mounted) return;
+    setState(() => _locallyActiveNewDeals = 0);
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => LocallyActivePartnersPage(cityFilter: _selectedCity),
+      ),
+    );
+  }
+
+  Future<void> _openFreshLocal() async {
+    await FreshLocalNotice.markSeen();
+    if (!mounted) return;
+    setState(() => _freshLocalNewDeals = 0);
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => FreshLocalPartnersPage(cityFilter: _selectedCity),
+      ),
+    );
+  }
+
+  Future<void> _openLocalSips() async {
+    if (!await ensureMemberIsAgeVerified(context)) return;
+    await LocalSipsNotice.markSeen();
+    if (!mounted) return;
+    setState(() => _localSipsNewDeals = 0);
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => LocalSipsPartnersPage(cityFilter: _selectedCity),
+      ),
+    );
+  }
+
+  Future<void> _openLocalEats() async {
+    await LocalEatsNotice.markSeen();
+    if (!mounted) return;
+    setState(() => _localEatsNewDeals = 0);
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => LocalEatsPartnersPage(cityFilter: _selectedCity),
+      ),
+    );
+  }
+
   Future<void> _loadMemberCityProvince() async {
     setState(() => _isLoadingCities = true);
     try {
@@ -1249,6 +1376,8 @@ class _MembersHomePageState extends State<MembersHomePage>
         },
       );
     }
+
+    await _loadFreshLocalAvailability();
   }
 
   void _showCityFilterBottomSheet() {
@@ -1700,6 +1829,7 @@ class _MembersHomePageState extends State<MembersHomePage>
           context: context,
           builder: (context) => TrustedPartnerKeyDialog(
             userId: user.id,
+            isTrustedPartnerKey: true,
             onSuccess: () {
               _loadUserData();
             },
@@ -1824,23 +1954,6 @@ class _MembersHomePageState extends State<MembersHomePage>
                       _buildPendingPaymentsCard(context),
                       const SizedBox(height: 20),
                     ],
-
-                    // Trusted partners
-                    _buildSectionHeader(
-                      'Trusted Partners',
-                      trailing: _buildSeeAll(() {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => TrustedPartnersByCategoryPage(
-                              cityFilter: _selectedCity,
-                            ),
-                          ),
-                        );
-                      }),
-                    ),
-                    const SizedBox(height: 8),
-                    _buildPartnersCard(context),
 
                     const SizedBox(height: 16), // clearance for bottom nav
                   ],
@@ -1998,6 +2111,36 @@ class _MembersHomePageState extends State<MembersHomePage>
                     ),
                     const SizedBox(width: 8),
                     // Messages & Support (with unread badge)
+                    if (widget.onBackToBusiness != null) ...[
+                      Tooltip(
+                        message: 'Back to Business Mode',
+                        child: Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(12),
+                            onTap: widget.onBackToBusiness,
+                            child: Container(
+                              width: 42,
+                              height: 42,
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: Colors.white.withValues(alpha: 0.18),
+                                  width: 1.2,
+                                ),
+                              ),
+                              child: const Icon(
+                                Icons.swap_horiz_rounded,
+                                color: Colors.white,
+                                size: 20,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                    ],
                     _buildHeroMessagesButton(context),
                     const SizedBox(width: 8),
                     // Sign out
@@ -2346,51 +2489,51 @@ class _MembersHomePageState extends State<MembersHomePage>
   }
 
   Widget _buildQuickActions(BuildContext context) {
-    return Row(
+    return Column(
       children: [
-        Expanded(
-          child: _buildActionTile(
-            icon: Icons.local_offer_outlined,
-            label: 'Find Deals',
-            color: AppColors.accent,
-            bgColor: AppColors.accent.withValues(alpha: 0.12),
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => DealSelectionPage(cityFilter: _selectedCity),
-              ),
+        _buildActionTile(
+          icon: Icons.local_offer_outlined,
+          label: 'Find Deals',
+          color: AppColors.accent,
+          bgColor: AppColors.accent.withValues(alpha: 0.12),
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => DealSelectionPage(cityFilter: _selectedCity),
             ),
           ),
         ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: _buildActionTile(
-            icon: Icons.receipt_long_outlined,
-            label: 'Receipts',
-            color: AppColors.success,
-            bgColor: AppColors.success.withValues(alpha: 0.10),
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const MemberReceiptsPage()),
+        const SizedBox(height: 10),
+        MemberCategoryBannerRow(
+          onTapPartners: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) =>
+                  TrustedPartnersByCategoryPage(cityFilter: _selectedCity),
             ),
           ),
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: _buildActionTile(
-            icon: Icons.storefront_outlined,
-            label: 'Partners',
-            color: AppColors.primary,
-            bgColor: AppColors.primary.withValues(alpha: 0.08),
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => TrustedPartnersByCategoryPage(
-                  cityFilter: _selectedCity,
-                ),
-              ),
-            ),
-          ),
+              partnerCount: _trustedPartnersCount,
+              dealCount: _availableDealsCount,
+          showFreshLocal: _hasFreshLocalPartners,
+          onTapFreshLocal: _openFreshLocal,
+          freshNewDeals: _freshLocalNewDeals,
+          freshPartnerCount: _freshLocalPartnerCount,
+          freshDealCount: _freshLocalDealCount,
+          showLocalSips: _hasLocalSipsPartners,
+          onTapLocalSips: _openLocalSips,
+          sipsNewDeals: _localSipsNewDeals,
+          sipsPartnerCount: _localSipsPartnerCount,
+          sipsDealCount: _localSipsDealCount,
+          showLocalEats: _hasLocalEatsPartners,
+          onTapLocalEats: _openLocalEats,
+          eatsNewDeals: _localEatsNewDeals,
+          eatsPartnerCount: _localEatsPartnerCount,
+          eatsDealCount: _localEatsDealCount,
+          showLocallyActive: _hasLocallyActivePartners,
+          onTapLocallyActive: _openLocallyActive,
+          activeNewDeals: _locallyActiveNewDeals,
+          activePartnerCount: _locallyActivePartnerCount,
+          activeDealCount: _locallyActiveDealCount,
         ),
       ],
     );
@@ -2641,80 +2784,6 @@ class _MembersHomePageState extends State<MembersHomePage>
     );
   }
 
-  // ── Partners card ─────────────────────────────────────────────────────────
-
-  Widget _buildPartnersCard(BuildContext context) {
-    return GestureDetector(
-      onTap: () => Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => TrustedPartnersByCategoryPage(cityFilter: _selectedCity),
-        ),
-      ),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          gradient: AppColors.freshGradient,
-          borderRadius: BorderRadius.circular(18),
-          boxShadow: [
-            BoxShadow(
-              color: AppColors.success.withValues(alpha: 0.18),
-              blurRadius: 12,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.2),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: const Icon(Icons.storefront_outlined, size: 28, color: Colors.white),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Trusted Partners',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w800,
-                      color: Colors.white,
-                    ),
-                  ),
-                  const SizedBox(height: 3),
-                  _isLoadingPartnersCount
-                      ? Text(
-                          'Loading...',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.white.withValues(alpha: 0.7),
-                          ),
-                        )
-                      : Text(
-                          '$_trustedPartnersCount ${_trustedPartnersCount == 1 ? 'partner' : 'partners'} · $_availableDealsCount ${_availableDealsCount == 1 ? 'deal' : 'deals'}',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.white.withValues(alpha: 0.8),
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                ],
-              ),
-            ),
-            const Icon(Icons.chevron_right_rounded, color: Colors.white, size: 28),
-          ],
-        ),
-      ),
-    );
-  }
-
   // ── Bottom navigation bar ────────────────────────────────────────────────
 
   Widget _buildBottomNav(BuildContext context) {
@@ -2745,26 +2814,11 @@ class _MembersHomePageState extends State<MembersHomePage>
               ),
               _buildNavItem(
                 index: 1,
-                icon: Icons.local_offer_outlined,
-                activeIcon: Icons.local_offer,
-                label: 'Deals',
-                onTap: () {
-                  setState(() => _selectedNavIndex = 1);
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => DealSelectionPage(cityFilter: _selectedCity),
-                    ),
-                  ).then((_) => setState(() => _selectedNavIndex = 0));
-                },
-              ),
-              _buildNavItem(
-                index: 2,
                 icon: Icons.receipt_long_outlined,
                 activeIcon: Icons.receipt_long,
                 label: 'Receipts',
                 onTap: () {
-                  setState(() => _selectedNavIndex = 2);
+                  setState(() => _selectedNavIndex = 1);
                   Navigator.push(
                     context,
                     MaterialPageRoute(builder: (_) => const MemberReceiptsPage()),
@@ -2772,12 +2826,12 @@ class _MembersHomePageState extends State<MembersHomePage>
                 },
               ),
               _buildNavItem(
-                index: 3,
+                index: 2,
                 icon: Icons.person_outline,
                 activeIcon: Icons.person,
                 label: 'Profile',
                 onTap: () async {
-                  setState(() => _selectedNavIndex = 3);
+                  setState(() => _selectedNavIndex = 2);
                   await Navigator.push(
                     context,
                     MaterialPageRoute(builder: (_) => const MemberProfilePage()),

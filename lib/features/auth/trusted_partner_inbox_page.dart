@@ -7,6 +7,7 @@ import '../../models/chat_message.dart';
 import '../../services/chat_service.dart';
 import '../../services/supabase_service.dart';
 import '../../widgets/profile_photo.dart';
+import '../../widgets/branded_app_bar.dart';
 import '../chat/chat_thread_page.dart';
 import 'admin_chat_page.dart';
 
@@ -165,7 +166,7 @@ class _TrustedPartnerInboxPageState extends State<TrustedPartnerInboxPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
+      appBar: BrandedAppBar(
         title: const Text('Member Messages'),
         actions: [
           IconButton(

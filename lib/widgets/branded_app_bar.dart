@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/theme/app_colors.dart';
+import '../features/chat/chat_list_page.dart';
+import '../services/supabase_service.dart';
 
 /// Drop-in replacement for [AppBar] that renders the Local Lekker
 /// wordmark with a consistent light logo block on a clean header.
@@ -38,6 +40,7 @@ class BrandedAppBar extends StatelessWidget implements PreferredSizeWidget {
   final Color? shadowColor;
   final Color? surfaceTintColor;
   final bool primary;
+  final bool showChatButton;
 
   const BrandedAppBar({
     super.key,
@@ -62,6 +65,7 @@ class BrandedAppBar extends StatelessWidget implements PreferredSizeWidget {
     this.shadowColor,
     this.surfaceTintColor,
     this.primary = true,
+    this.showChatButton = true,
   });
 
   /// Rendered logo height used across TP and TP-member screens.
@@ -184,15 +188,28 @@ class BrandedAppBar extends StatelessWidget implements PreferredSizeWidget {
     // Compact-density wrapper for action widgets so multiple icons,
     // toggles and popup menus can sit next to the larger logo on
     // narrow phone screens without overlapping it.
+    final currentUser = SupabaseService.instance.getCurrentUser();
+    final List<Widget> effectiveActions = [
+      if (showChatButton && currentUser != null)
+        IconButton(
+          tooltip: 'Messages',
+          icon: const Icon(Icons.forum_outlined),
+          onPressed: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const ChatListPage()),
+            );
+          },
+        ),
+      ...?actions,
+    ];
+
     List<Widget>? compactActions;
-    if (actions != null && actions!.isNotEmpty) {
+    if (effectiveActions.isNotEmpty) {
       compactActions = [
         IconTheme.merge(
           data: IconThemeData(size: 21, color: fg),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: actions!,
-          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: effectiveActions),
         ),
         const SizedBox(width: 0),
       ];

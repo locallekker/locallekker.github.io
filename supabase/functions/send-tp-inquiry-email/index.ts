@@ -31,6 +31,9 @@ serve(async (req) => {
       business_type,
       email,
       contact_number,
+      sells_fresh_produce,
+      sells_alcohol,
+      offers_sports_activities,
     } = await req.json()
 
     // Validate required fields
@@ -76,6 +79,9 @@ Business Details:
   Business Name: ${business_name}
   Business Type: ${business_type || 'Not specified'}
   City: ${city || 'Not specified'}
+  Fresh & Local Produce: ${sells_fresh_produce ? 'YES - wants to sell fresh produce' : 'No'}
+  Local Sips (alcohol): ${sells_alcohol ? 'YES - liquor licence documents required' : 'No'}
+  Locally Active (sport/fitness): ${offers_sports_activities ? 'YES - offers sport/fitness activities' : 'No'}
 
 Please contact them to finalise their signup and onboarding.
 
@@ -127,7 +133,7 @@ This is an automated notification from the Local Lekker app.
         const notifications = admins.map((admin: { id: string }) => ({
           user_id: admin.id,
           title: 'New Trusted Partner Inquiry',
-          message: `${name} ${surname} (${business_name}) wants to become a Trusted Partner`,
+          message: `${name} ${surname} (${business_name}) wants to become a Trusted Partner${sells_fresh_produce ? ' - Fresh & Local produce' : ''}${sells_alcohol ? ' - Local Sips (alcohol)' : ''}${offers_sports_activities ? ' - Locally Active (sport/fitness)' : ''}`,
           type: 'tp_inquiry',
           data: {
             business_name,
@@ -135,6 +141,9 @@ This is an automated notification from the Local Lekker app.
             email,
             contact_number: contact_number || 'Not provided',
             city: city || 'Not specified',
+            sells_fresh_produce: sells_fresh_produce === true,
+            sells_alcohol: sells_alcohol === true,
+            offers_sports_activities: offers_sports_activities === true,
           },
           is_read: false,
         }))

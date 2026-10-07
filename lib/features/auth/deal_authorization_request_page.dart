@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:local_lekker/widgets/branded_app_bar.dart';
 import '../../models/discount.dart';
 import '../../services/deal_authorization_service.dart';
 import '../../services/supabase_service.dart';
+import '../../services/admin_engagement_service.dart';
 
 class DealAuthorizationRequestPage extends StatefulWidget {
   final Map<String, dynamic> deal;
@@ -38,6 +40,7 @@ class _DealAuthorizationRequestPageState
     super.initState();
     // Initialize quantity from deal data
     final discount = Discount.fromJson(widget.deal);
+    unawaited(AdminEngagementService().recordDealOpen(discount.id));
     if (discount.isPercentItem && discount.requiresManualPrice) {
       final suggested = discount.itemPrice > 0
           ? discount.itemPrice.toStringAsFixed(2)

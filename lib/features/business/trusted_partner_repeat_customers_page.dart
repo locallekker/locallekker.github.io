@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:logger/logger.dart';
 import '../../services/supabase_service.dart';
+import '../../widgets/branded_app_bar.dart';
 
 class TrustedPartnerRepeatCustomersPage extends StatefulWidget {
   const TrustedPartnerRepeatCustomersPage({super.key});
@@ -102,7 +103,7 @@ class _TrustedPartnerRepeatCustomersPageState
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
+      appBar: BrandedAppBar(
         title: const Text('Repeat Customers'),
         actions: [
           IconButton(

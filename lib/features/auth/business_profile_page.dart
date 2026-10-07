@@ -5,6 +5,7 @@ import 'package:local_lekker/widgets/branded_app_bar.dart';
 import 'package:flutter/services.dart';
 import 'package:logger/logger.dart';
 import 'package:image_picker/image_picker.dart';
+import '../../core/constants/deal_categories.dart';
 import '../../services/supabase_service.dart';
 import '../../services/navigation_service.dart';
 import '../../services/paystack_service.dart';
@@ -59,11 +60,18 @@ class _BusinessProfilePageState extends State<BusinessProfilePage> {
   late final TextEditingController _instagramController;
   late final TextEditingController _websiteController;
   late final TextEditingController _businessEmailController;
+  late final TextEditingController _produceDescriptionController;
+  late final TextEditingController _alcoholDescriptionController;
+  late final TextEditingController _sportsDescriptionController;
   // Latitude/longitude removed - not needed
   // Note: businessId no longer required for bank accounts; logos may still use returned id
   String? _selectedCategory;
   String? _selectedProvince;
   String? _selectedCity;
+  bool _sellsFreshProduce = false;
+  bool _sellsAlcohol = false;
+  bool _liquorLicenseVerified = false;
+  bool _offersSportsActivities = false;
   bool _isLoading = true; // Add loading state
   String? _trustedPartnerKey;
   bool _keyIsUsed = false;
@@ -221,6 +229,9 @@ class _BusinessProfilePageState extends State<BusinessProfilePage> {
     _instagramController = TextEditingController();
     _websiteController = TextEditingController();
     _businessEmailController = TextEditingController();
+    _produceDescriptionController = TextEditingController();
+    _alcoholDescriptionController = TextEditingController();
+    _sportsDescriptionController = TextEditingController();
     // Lat/lng initialization removed
     // Validate initial category is in the list, fallback to 'General'
     _selectedCategory =
@@ -260,7 +271,7 @@ class _BusinessProfilePageState extends State<BusinessProfilePage> {
           final businessResponse = await SupabaseService.instance.client
               .from('businesses')
               .select(
-                'name, address, city, contact_email, contact_number, category, logo_url, allow_admin_deal_creation, facebook_handle, instagram_handle, website_url, business_email',
+                'name, address, city, contact_email, contact_number, category, logo_url, allow_admin_deal_creation, facebook_handle, instagram_handle, website_url, business_email, sells_fresh_produce, produce_description, sells_alcohol, alcohol_description, liquor_license_verified, offers_sports_activities, sports_description',
               )
               .eq('owner_member_id', user.id)
               .maybeSingle()
@@ -321,6 +332,22 @@ class _BusinessProfilePageState extends State<BusinessProfilePage> {
                 _websiteController.text = businessResponse['website_url'] ?? '';
                 _businessEmailController.text =
                     businessResponse['business_email'] ?? '';
+                _sellsFreshProduce =
+                    (businessResponse['sells_fresh_produce'] ?? false) as bool;
+                _produceDescriptionController.text =
+                    businessResponse['produce_description'] ?? '';
+                _sellsAlcohol =
+                    (businessResponse['sells_alcohol'] ?? false) as bool;
+                _alcoholDescriptionController.text =
+                    businessResponse['alcohol_description'] ?? '';
+                _liquorLicenseVerified =
+                    (businessResponse['liquor_license_verified'] ?? false)
+                        as bool;
+                _offersSportsActivities =
+                    (businessResponse['offers_sports_activities'] ?? false)
+                        as bool;
+                _sportsDescriptionController.text =
+                    businessResponse['sports_description'] ?? '';
                 // Initialize province/city from loaded data
                 final loadedCity = businessResponse['city'] as String?;
                 if (loadedCity != null && loadedCity.isNotEmpty) {
@@ -647,6 +674,236 @@ class _BusinessProfilePageState extends State<BusinessProfilePage> {
     } finally {
       if (mounted) setState(() => _isRequestingKey = false);
     }
+  }
+
+  Widget _buildFreshProduceSection() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.green.shade50,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.green.shade200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.eco, color: Colors.green.shade700),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  '$kFreshLocalCategory Produce',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Sell locally sourced fresh produce such as milk, poultry, '
+            'vegetables, fruit and meat.',
+            style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+          ),
+          CheckboxListTile(
+            contentPadding: EdgeInsets.zero,
+            controlAffinity: ListTileControlAffinity.leading,
+            value: _sellsFreshProduce,
+            title: const Text('I sell fresh produce'),
+            subtitle: const Text(
+              'Members will find your shop under $kFreshLocalCategory',
+            ),
+            onChanged: (value) =>
+                setState(() => _sellsFreshProduce = value ?? false),
+          ),
+          if (_sellsFreshProduce)
+            TextFormField(
+              controller: _produceDescriptionController,
+              maxLines: 3,
+              maxLength: 200,
+              decoration: const InputDecoration(
+                labelText: 'What do you sell?',
+                hintText: 'e.g. Free-range eggs, seasonal veg boxes, raw milk',
+                border: OutlineInputBorder(),
+              ),
+              validator: (value) {
+                if (!_sellsFreshProduce) return null;
+                if (value == null || value.trim().isEmpty) {
+                  return 'Please describe the produce you sell';
+                }
+                return null;
+              },
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLocalSipsSection() {
+    const wineDark = Color(0xFF722F37);
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7EDEF),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFE0C2C7)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: const [
+              Icon(Icons.wine_bar, color: wineDark),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  kLocalSipsCategory,
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Locally produced wines, craft beers and spirits. Members must '
+            'confirm they are 18 or older before browsing this section.',
+            style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+          ),
+          CheckboxListTile(
+            contentPadding: EdgeInsets.zero,
+            controlAffinity: ListTileControlAffinity.leading,
+            activeColor: wineDark,
+            value: _sellsAlcohol,
+            title: const Text('I sell locally produced alcohol'),
+            subtitle: const Text(
+              'Members will find your shop under $kLocalSipsCategory',
+            ),
+            onChanged: (value) =>
+                setState(() => _sellsAlcohol = value ?? false),
+          ),
+          if (_sellsAlcohol) ...[
+            TextFormField(
+              controller: _alcoholDescriptionController,
+              maxLines: 3,
+              maxLength: 200,
+              decoration: const InputDecoration(
+                labelText: 'What do you produce?',
+                hintText: 'e.g. Estate red wines, craft lagers, small-batch gin',
+                border: OutlineInputBorder(),
+              ),
+              validator: (value) {
+                if (!_sellsAlcohol) return null;
+                if (value == null || value.trim().isEmpty) {
+                  return 'Please describe what you produce';
+                }
+                return null;
+              },
+            ),
+            const SizedBox(height: 8),
+            _buildLicenceStatus(),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLicenceStatus() {
+    const wineDark = Color(0xFF722F37);
+    final verified = _liquorLicenseVerified;
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(
+          verified ? Icons.verified : Icons.pending_outlined,
+          size: 18,
+          color: verified ? Colors.green.shade700 : wineDark,
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            verified
+                ? 'Liquor licence verified by Local Lekker.'
+                : 'Awaiting licence verification. Send your national liquor '
+                      'and distribution licence documents to Local Lekker — an '
+                      'admin will upload and verify them.',
+            style: TextStyle(
+              fontSize: 12,
+              color: verified ? Colors.green.shade800 : wineDark,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLocallyActiveSection() {
+    const skyDark = Color(0xFF01579B);
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFE1F5FE),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFB3E5FC)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: const [
+              Icon(Icons.sports_soccer, color: skyDark),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  kLocallyActiveCategory,
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Sport clubs, coaches and fitness activities.',
+            style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+          ),
+          CheckboxListTile(
+            contentPadding: EdgeInsets.zero,
+            controlAffinity: ListTileControlAffinity.leading,
+            activeColor: skyDark,
+            value: _offersSportsActivities,
+            title: const Text('I offer sport/fitness activities'),
+            subtitle: const Text(
+              'Members will find your shop under $kLocallyActiveCategory',
+            ),
+            onChanged: (value) =>
+                setState(() => _offersSportsActivities = value ?? false),
+          ),
+          if (_offersSportsActivities)
+            TextFormField(
+              controller: _sportsDescriptionController,
+              maxLines: 3,
+              maxLength: 200,
+              decoration: const InputDecoration(
+                labelText: 'What do you offer?',
+                hintText: 'e.g. Padel coaching, gym memberships, running club',
+                border: OutlineInputBorder(),
+              ),
+              validator: (value) {
+                if (!_offersSportsActivities) return null;
+                if (value == null || value.trim().isEmpty) {
+                  return 'Please describe the activities you offer';
+                }
+                return null;
+              },
+            ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -997,6 +1254,12 @@ class _BusinessProfilePageState extends State<BusinessProfilePage> {
                 decoration: const InputDecoration(labelText: 'Contact Number'),
                 keyboardType: TextInputType.phone,
               ),
+              const SizedBox(height: 24),
+              _buildFreshProduceSection(),
+              const SizedBox(height: 16),
+              _buildLocalSipsSection(),
+              const SizedBox(height: 16),
+              _buildLocallyActiveSection(),
               const SizedBox(height: 24),
               // Social Media & Web Presence Section
               Container(
@@ -1424,6 +1687,32 @@ class _BusinessProfilePageState extends State<BusinessProfilePage> {
       Logger().w('Could not update city column directly: $e');
     }
 
+    // Not part of the completeBusinessProfile RPC payload, so written directly.
+    try {
+      final user = SupabaseService.instance.getCurrentUser();
+      if (user != null) {
+        await SupabaseService.instance.client
+            .from('businesses')
+            .update({
+              'sells_fresh_produce': _sellsFreshProduce,
+              'produce_description': _sellsFreshProduce
+                  ? _produceDescriptionController.text.trim()
+                  : null,
+              'sells_alcohol': _sellsAlcohol,
+              'alcohol_description': _sellsAlcohol
+                  ? _alcoholDescriptionController.text.trim()
+                  : null,
+              'offers_sports_activities': _offersSportsActivities,
+              'sports_description': _offersSportsActivities
+                  ? _sportsDescriptionController.text.trim()
+                  : null,
+            })
+            .eq('owner_member_id', user.id);
+      }
+    } catch (e) {
+      Logger().w('Could not update category opt-in columns: $e');
+    }
+
     final payload = {
       'name': _nameController.text.trim(),
       'category': _selectedCategory,
@@ -1579,6 +1868,9 @@ class _BusinessProfilePageState extends State<BusinessProfilePage> {
     _instagramController.dispose();
     _websiteController.dispose();
     _businessEmailController.dispose();
+    _produceDescriptionController.dispose();
+    _alcoholDescriptionController.dispose();
+    _sportsDescriptionController.dispose();
     _accountHolderController.dispose();
     _bankNameController.dispose();
     _accountNumberController.dispose();
