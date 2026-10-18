@@ -11,6 +11,7 @@ import '../../widgets/deal_schedule_widget.dart';
 import '../../widgets/liquor_licence_warning.dart';
 import '../admin/website_redirect_deal_dialog.dart';
 import '../admin/booking_redirect_deal_dialog.dart';
+import '../business/restaurant_deal_dialog.dart';
 import 'package:image_picker/image_picker.dart';
 import 'dart:io';
 import 'dart:typed_data';
@@ -106,7 +107,7 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
     _lockedDealCategory = widget.lockedDealCategory;
     _partnerCategoryLoaded = widget.lockedDealCategory != null;
     _loadDiscounts();
-    if (_isAdminContext && !_partnerCategoryLoaded) {
+    if (!_partnerCategoryLoaded) {
       _getLockedDealCategory().then((_) {
         if (mounted) setState(() {});
       });
@@ -179,7 +180,9 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
           ? kLocalSipsCategory
           : offersSportsActivities
           ? kLocallyActiveCategory
-          : businessCategory == kFoodBusinessCategory
+          : businessCategory != null &&
+                (kLocalEatsBusinessCategories.contains(businessCategory) ||
+                    businessCategory == kLocalEatsCategory)
           ? kLocalEatsCategory
           : businessCategory == kFreshLocalCategory
           ? kFreshLocalCategory
@@ -202,6 +205,12 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
 
     final lockedDealCategory = await _getLockedDealCategory();
     if (!mounted) return;
+
+    // Local Eats partners may only create the restaurant deal types.
+    if (lockedDealCategory == kLocalEatsCategory) {
+      await _openRestaurantDealDialog(lockedDealCategory: lockedDealCategory);
+      return;
+    }
 
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
@@ -286,6 +295,14 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
       return;
     }
 
+    if (discount.isRestaurantDeal) {
+      await _openRestaurantDealDialog(
+        existing: discount,
+        lockedDealCategory: lockedDealCategory,
+      );
+      return;
+    }
+
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (context) => EditDiscountDialog(
@@ -348,6 +365,47 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
 
   Future<void> _addBookingRedirectDeal() async {
     await _openBookingRedirectDialog();
+  }
+
+  /// Restaurant deals are offered to food and drink partners (and admins).
+  bool get _canAddRestaurantDeals =>
+      _isAdminContext ||
+      _lockedDealCategory == kLocalEatsCategory ||
+      _lockedDealCategory == kLocalSipsCategory;
+
+  bool get _isLocalEatsPartner => _lockedDealCategory == kLocalEatsCategory;
+
+  Future<void> _addRestaurantDeal() async {
+    final lockedDealCategory = await _getLockedDealCategory();
+    if (!mounted) return;
+    await _openRestaurantDealDialog(lockedDealCategory: lockedDealCategory);
+  }
+
+  Future<void> _openRestaurantDealDialog({
+    Discount? existing,
+    String? lockedDealCategory,
+  }) async {
+    final saved = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => RestaurantDealDialog(
+        trustedPartnerId: _effectivePartnerId,
+        existing: existing,
+        lockedDealCategory: lockedDealCategory,
+      ),
+    );
+    if (saved != true || !mounted) return;
+    await _loadDiscounts();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          existing == null ? 'Restaurant deal added' : 'Restaurant deal updated',
+        ),
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.only(bottom: 40, left: 16, right: 16),
+      ),
+    );
   }
 
   Future<void> _openBookingRedirectDialog({Discount? existing}) async {
@@ -506,6 +564,9 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
     try {
       final schedule = DealSchedule.fromJson(scheduleData);
 
+      if (schedule.type == ScheduleType.weekly) {
+        return '🕒 ${schedule.describe()}';
+      }
       if (schedule.type == ScheduleType.dateRange) {
         if (schedule.startDate != null && schedule.endDate != null) {
           final startStr =
@@ -583,11 +644,26 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
                           tooltip: 'Add Booking Deal (admin only)',
                           onPressed: _addBookingRedirectDeal,
                         ),
-                      IconButton(
-                        icon: const Icon(Icons.add, size: 28),
-                        tooltip: 'Add Deal',
-                        onPressed: _addDiscount,
-                      ),
+                      if (_canAddRestaurantDeals && !_isLocalEatsPartner)
+                        IconButton(
+                          icon: const Icon(Icons.restaurant_menu, size: 26),
+                          tooltip: 'Add Restaurant Deal',
+                          onPressed: _addRestaurantDeal,
+                        ),
+                      if (!_partnerCategoryLoaded)
+                        const SizedBox.shrink()
+                      else if (_isLocalEatsPartner)
+                        TextButton.icon(
+                          icon: const Icon(Icons.restaurant_menu),
+                          label: const Text('Add Restaurant Deal'),
+                          onPressed: _addDiscount,
+                        )
+                      else
+                        IconButton(
+                          icon: const Icon(Icons.add, size: 28),
+                          tooltip: 'Add Deal',
+                          onPressed: _addDiscount,
+                        ),
                     ],
                   ),
                   const SizedBox(height: 8),
@@ -695,6 +771,8 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
                             ? 'Website Deal - opens partner website'
                             : isBooking
                             ? 'Booking Deal - opens partner booking page'
+                            : discount.isRestaurantDeal
+                            ? '${discount.restaurantType?.label ?? 'Restaurant Deal'} - ${discount.discountDisplay}'
                             : discount.isBuyGet
                             ? '${discount.customData?['buy_item_name'] ?? discount.itemName} + ${discount.customData?['free_item_name'] ?? 'Free Item'} - R${discount.dealPrice.toStringAsFixed(2)}'
                             : discount.isPercentItem

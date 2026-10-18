@@ -1,5 +1,37 @@
 # New Deal Types Implementation - Integration Guide
 
+## Restaurant Buy One Get One Free pricing
+
+The shared [restaurant deal form](lib/features/business/restaurant_deal_dialog.dart)
+offers TP and admin users two mutually exclusive checkboxes for the `restaurant_bogo`
+deal type:
+
+- **Fixed price** (the default, including existing deals without `pricing_mode`):
+  enter one price when creating the deal. Existing redemption/payment behavior stays unchanged.
+- **Price entered at checkout** (`custom_data.pricing_mode = checkout`):
+  no creation-time price is required. The TP scans the member QR, selects the deal,
+  and enters the normal price of every qualifying item, including the free items.
+  The app and database independently calculate the eligible free quantity from
+  `buy_qty`, `free_qty`, and `max_free`, then discount that many of the cheapest
+  items across the qualifying items on the bill. Incomplete groups do not earn
+  another free item. Item totals cannot exceed the original bill.
+
+For example, R95 + R75 cocktails give a R75 discount; with four cocktails priced
+R120, R100, R80 and R60, buy-one-get-one gives R140 off (R60 + R80).
+Checkout-priced deals are redeemed and paid in store through a verified partner
+QR session; members cannot enter the prices or initiate Paystack payment for them.
+The prices are stored in `bill_data.restaurant.inputs.item_prices` for reporting.
+
+Apply only [migration 20261018170000](supabase/migrations/20261018170000_add_bogo_checkout_pricing.sql)
+before testing checkout-priced deals. Do not run a blanket migration push: the
+held-back in-app payment enforcement migration must not be applied early.
+The migration does not convert existing deals or alter Paystack logic.
+Regression checks: run `flutter test test/restaurant_deal_test.dart
+test/restaurant_deal_dialog_test.dart test/partner_qr_redemption_test.dart`.
+The [SQL regression tests](supabase/tests/bogo_checkout_pricing.sql) exercise the
+server calculator, creation-time validation, and calculator permissions using
+temporary test objects and roll back all changes.
+
 ## Completed Tasks ✓
 1. **Database Layer** - `add_new_deal_types.sql`
    - Added `deal_type`, `custom_data`, `requires_manual_price` to `trusted_partner_discounts`

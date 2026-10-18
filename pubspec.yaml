@@ -1,7 +1,7 @@
 name: local_lekker
 description: "Local Lekker - Smart receipt scanning and local business payments. Get instant discounts and pay digitally at your favorite local businesses."
 publish_to: 'none'
-version: 1.0.9+57
+version: 1.0.15+63
 
 environment:
   sdk: ^3.9.0
@@ -67,7 +67,7 @@ dependencies:
   screen_protector: ^1.4.2
   # Permission handling for camera and other runtime permissions
   # permission_handler removed to avoid Android plugin/tooling conflicts during APK build
-  # Google Sign-In (Continue with Google) — feeds into existing Supabase auth session
+  # Google Sign-In (Continue with Google) â€” feeds into existing Supabase auth session
   google_sign_in: ^6.2.2
 
 dev_dependencies:

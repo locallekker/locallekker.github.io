@@ -5,6 +5,7 @@ import '../../models/discount.dart';
 import '../../services/deal_authorization_service.dart';
 import '../../services/supabase_service.dart';
 import '../../services/admin_engagement_service.dart';
+import '../../services/in_app_payment_availability_service.dart';
 
 class DealAuthorizationRequestPage extends StatefulWidget {
   final Map<String, dynamic> deal;
@@ -32,6 +33,7 @@ class _DealAuthorizationRequestPageState
   String? _priceError;
 
   String? _selectedPaymentMethod; // null means not yet chosen
+  bool? _inAppAvailable; // null while checking partner banking
   bool _isSubmitting = false;
   late int _quantity; // Current quantity (items or grams)
 
@@ -50,6 +52,54 @@ class _DealAuthorizationRequestPageState
     _quantity = discount.isOnceOff
         ? 1
         : widget.deal['quantity'] as int? ?? (discount.isWeightBased ? 100 : 1);
+    unawaited(_loadInAppAvailability(discount.id));
+  }
+
+  Future<void> _loadInAppAvailability(String discountId) async {
+    final available = await InAppPaymentAvailabilityService()
+        .isAvailableForDiscount(discountId);
+    if (!mounted) return;
+    setState(() => _inAppAvailable = available);
+  }
+
+  String? get _partnerName {
+    final trustedPartner = widget.deal['trusted_partners'];
+    if (trustedPartner is Map) {
+      return trustedPartner['business_name'] as String?;
+    }
+    return null;
+  }
+
+  Future<void> _switchToPayInStore() async {
+    setState(() {
+      _inAppAvailable = false;
+      _selectedPaymentMethod = 'pos';
+    });
+    await InAppPaymentAvailabilityService().showUnavailableDialog(
+      context,
+      discountId: Discount.fromJson(widget.deal).id,
+      partnerName: _partnerName,
+    );
+  }
+
+  Future<void> _selectPaymentMethod(String method) async {
+    if (method != 'in_app') {
+      setState(() => _selectedPaymentMethod = method);
+      return;
+    }
+    final available = _inAppAvailable ??
+        await InAppPaymentAvailabilityService().isAvailableForDiscount(
+          Discount.fromJson(widget.deal).id,
+        );
+    if (!mounted) return;
+    if (available) {
+      setState(() {
+        _inAppAvailable = true;
+        _selectedPaymentMethod = 'in_app';
+      });
+    } else {
+      await _switchToPayInStore();
+    }
   }
 
   @override
@@ -196,6 +246,13 @@ class _DealAuthorizationRequestPageState
         Navigator.of(context).pop();
       }
     } catch (e) {
+      if (InAppPaymentAvailabilityService.isUnavailableError(e)) {
+        if (mounted) {
+          setState(() => _isSubmitting = false);
+          await _switchToPayInStore();
+        }
+        return;
+      }
       if (mounted) {
         ScaffoldMessenger.of(
           context,
@@ -683,8 +740,11 @@ class _DealAuthorizationRequestPageState
             _buildPaymentMethodCard(
               'in_app',
               'In-App Payment',
-              'Pay securely through the app after the partner approves your request',
+              _inAppAvailable == false
+                  ? 'Not available for this partner yet - please pay in store'
+                  : 'Pay securely through the app after the partner approves your request',
               Icons.phone_android,
+              unavailable: _inAppAvailable == false,
             ),
             const SizedBox(height: 12),
             _buildPaymentMethodCard(
@@ -747,11 +807,14 @@ class _DealAuthorizationRequestPageState
     String method,
     String title,
     String description,
-    IconData icon,
-  ) {
+    IconData icon, {
+    bool unavailable = false,
+  }) {
     final isSelected = _selectedPaymentMethod == method;
 
-    return Card(
+    return Opacity(
+      opacity: unavailable ? 0.5 : 1,
+      child: Card(
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
         side: BorderSide(
@@ -763,7 +826,7 @@ class _DealAuthorizationRequestPageState
       ),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
-        onTap: () => setState(() => _selectedPaymentMethod = method),
+        onTap: () => _selectPaymentMethod(method),
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Row(
@@ -826,6 +889,7 @@ class _DealAuthorizationRequestPageState
             ],
           ),
         ),
+      ),
       ),
     );
   }

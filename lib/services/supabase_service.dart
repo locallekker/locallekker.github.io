@@ -30,8 +30,19 @@ class SupabaseService {
           dotenv.env['SUPABASE_ANON_KEY'] ??
           'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0';
       _client = SupabaseClient(url, anonKey);
+      applyClientCapabilities(_client!);
       return _client!;
     }
+  }
+
+  /// Features this app version understands. The database hides newer deal
+  /// types from app versions that don't send the matching capability.
+  static const String clientCapabilities = 'restaurant_deals_v1';
+
+  /// Only database (REST) requests carry the header; Edge Function calls are
+  /// left untouched.
+  static void applyClientCapabilities(SupabaseClient client) {
+    client.rest.headers['x-ll-capabilities'] = clientCapabilities;
   }
 
   final Logger _logger = Logger();
@@ -64,6 +75,7 @@ class SupabaseService {
     _logger.d('SupabaseService: Using URL: $url');
     await Supabase.initialize(url: url, anonKey: anonKey);
     _client = Supabase.instance.client;
+    applyClientCapabilities(_client!);
     _logger.i('SupabaseService: Supabase initialized successfully');
 
     // Initialize auth state change listener

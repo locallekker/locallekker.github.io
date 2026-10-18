@@ -154,9 +154,13 @@ class DiscountService {
     required String category,
     required String logLabel,
     String? flagColumn,
-    String? businessCategory,
+    List<String>? businessCategories,
     String? city,
   }) async {
+    final businessCategory =
+        (businessCategories == null || businessCategories.isEmpty)
+        ? null
+        : businessCategories;
     try {
       final results = await Future.wait<dynamic>([
         _supabase
@@ -175,7 +179,7 @@ class DiscountService {
           _supabase
               .from('businesses')
               .select('owner_member_id')
-              .eq('category', businessCategory)
+              .inFilter('category', businessCategory)
         else
           Future.value(<Map<String, dynamic>>[]),
       ]);
@@ -212,11 +216,23 @@ class DiscountService {
       if (city != null && city.trim().isNotEmpty) {
         query = query.eq('city', city.trim());
       }
+      var businesses = List<Map<String, dynamic>>.from(await query);
       if (businessCategory != null) {
-        query = query.eq('category', businessCategory);
+        final categoryDealOwners = {
+          for (final row in (results[0] as List))
+            if (row['trusted_partner_id'] is String)
+              row['trusted_partner_id'] as String,
+        };
+        // Keep partners in a matching business category, plus any partner
+        // who has explicitly created deals in this curated category.
+        businesses = businesses
+            .where(
+              (b) =>
+                  businessCategory.contains(b['category']) ||
+                  categoryDealOwners.contains(b['owner_member_id']),
+            )
+            .toList();
       }
-
-      final businesses = List<Map<String, dynamic>>.from(await query);
       if (businesses.isEmpty) {
         _logger.i('🔎 No $logLabel businesses matched city filter "$city"');
         return [];
@@ -316,11 +332,11 @@ class DiscountService {
         city: city,
       );
 
-  /// Food & Beverage businesses with at least one active deal.
+  /// Food & Beverage and Restaurant businesses with at least one active deal.
   Future<List<Map<String, dynamic>>> getLocalEatsPartners({String? city}) =>
       _getCategoryPartners(
         category: kLocalEatsCategory,
-        businessCategory: kFoodBusinessCategory,
+        businessCategories: kLocalEatsBusinessCategories,
         logLabel: 'local eats',
         city: city,
       );
@@ -780,6 +796,7 @@ class DiscountService {
     String? dealType,
     Map<String, dynamic>? dealSnapshot,
     String? notes,
+    Map<String, dynamic>? billData,
   }) async {
     try {
       if (kDebugMode) {
@@ -815,6 +832,7 @@ class DiscountService {
         'deal_snapshot': dealSnapshot,
         'status': 'pending',
         'notes': notes,
+        if (billData != null) 'bill_data': billData,
       };
 
       if (kDebugMode) {

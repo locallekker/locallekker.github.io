@@ -40,8 +40,10 @@ import 'trusted_partner_inbox_page.dart';
 import 'members_home_page.dart';
 import '../../services/chat_service.dart';
 import '../business/bill_approval_page.dart';
+import '../business/partner_qr_redemption_page.dart';
 import 'deal_authorization_dashboard.dart';
 import '../business/trusted_partner_analytics_dashboard.dart';
+import '../../services/partner_qr_redemption_service.dart';
 import '../../widgets/trusted_partner_analytics_widget.dart';
 import '../../widgets/branded_app_bar.dart';
 import 'package:flutter/foundation.dart';
@@ -543,6 +545,7 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
       backgroundColor: Colors.white,
       appBar: BrandedAppBar(
         toolbarHeight: _isShortLandscapeViewport ? 68 : 100,
+        showChatButton: false,
         actions: [
           _buildHeaderActionGrid(isMemberMode: false),
         ],
@@ -2669,6 +2672,14 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
           contentPadding: EdgeInsets.zero,
         ),
       ),
+      const PopupMenuItem<String>(
+        value: 'support',
+        child: ListTile(
+          leading: Icon(Icons.support_agent),
+          title: Text('Chat with Support'),
+          contentPadding: EdgeInsets.zero,
+        ),
+      ),
     ];
   }
 
@@ -2900,6 +2911,12 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
         break;
       case 'profile':
         _navigateToBusinessProfile();
+        break;
+      case 'support':
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (context) => const AdminChatPage()),
+        );
         break;
     }
   }
@@ -5773,30 +5790,56 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
       }
 
       final userId = data['user_id']?.toString();
-      final qrName = data['name']?.toString() ?? 'Unknown';
-      final qrSurname = data['surname']?.toString() ?? 'Unknown';
-
       if (userId == null || userId.isEmpty) {
         _showErrorDialog('Invalid QR code: No member ID found.');
         break;
       }
 
-      // Valid member QR - proceed
-      _closeScanner();
-      _showMemberDetailsPopup(
-        userId: userId,
-        qrName: qrName,
-        qrSurname: qrSurname,
-      );
+      final businessId = _businessId;
+      if (businessId == null) {
+        _showErrorDialog('Business details are still loading. Please try again.');
+        break;
+      }
+
+      final verifiedQrPayload = jsonEncode(data);
+      await _closeScanner();
+      try {
+        final member = await PartnerQrRedemptionService().verifyMemberQr(
+          businessId: businessId,
+          qrPayload: verifiedQrPayload,
+        );
+        if (!mounted) return;
+        final redemptionSessionId =
+            member['redemption_session_id']?.toString();
+        if (redemptionSessionId == null || redemptionSessionId.isEmpty) {
+          throw const FormatException(
+            'Member verification did not start a redemption session.',
+          );
+        }
+        _showMemberDetailsPopup(
+          businessId: businessId,
+          redemptionSessionId: redemptionSessionId,
+          member: member,
+        );
+      } catch (e) {
+        final error = e.toString();
+        final match = RegExp(
+          r'QR_REDEMPTION_[A-Z_]+:\s*(.*?)(?:, code:|\)$|$)',
+        ).firstMatch(error);
+        _showErrorDialog(
+          match?.group(1)?.trim() ??
+              error.replaceFirst('Exception: ', '').trim(),
+        );
+      }
       break; // Process only the first barcode
     }
   }
 
-  /// Fetches member details from Supabase and shows a rich popup
+  /// Shows member details returned by the server-side QR verification.
   void _showMemberDetailsPopup({
-    required String userId,
-    required String qrName,
-    required String qrSurname,
+    required String businessId,
+    required String redemptionSessionId,
+    required Map<String, dynamic> member,
   }) {
     showGeneralDialog(
       context: context,
@@ -5806,9 +5849,19 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
       transitionDuration: const Duration(milliseconds: 250),
       pageBuilder: (dialogContext, animation, secondaryAnimation) {
         return _MemberDetailsSheet(
-          userId: userId,
-          qrName: qrName,
-          qrSurname: qrSurname,
+          member: member,
+          onContinue: () {
+            Navigator.of(dialogContext).pop();
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => PartnerQrRedemptionPage(
+                  businessId: businessId,
+                  redemptionSessionId: redemptionSessionId,
+                  member: member,
+                ),
+              ),
+            );
+          },
         );
       },
       transitionBuilder: (context, animation, secondaryAnimation, child) {
@@ -5863,16 +5916,14 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
   }
 }
 
-/// Bottom-sheet style widget that loads and displays member details from Supabase
+/// Bottom-sheet style widget for server-verified member details.
 class _MemberDetailsSheet extends StatefulWidget {
-  final String userId;
-  final String qrName;
-  final String qrSurname;
+  final Map<String, dynamic> member;
+  final VoidCallback onContinue;
 
   const _MemberDetailsSheet({
-    required this.userId,
-    required this.qrName,
-    required this.qrSurname,
+    required this.member,
+    required this.onContinue,
   });
 
   @override
@@ -5887,9 +5938,11 @@ class _MemberDetailsSheetState extends State<_MemberDetailsSheet> {
   // Profile data
   String _name = '';
   String _surname = '';
-  String _email = '';
+  String _memberId = '';
   String _subscriptionStatus = 'unknown';
   String? _memberSince;
+  String? _profilePhotoUrl;
+  bool _membershipActive = false;
 
   // QR validity
   bool _qrIsActive = false;
@@ -5902,48 +5955,15 @@ class _MemberDetailsSheetState extends State<_MemberDetailsSheet> {
     _fetchMemberDetails();
   }
 
-  Future<void> _fetchMemberDetails() async {
+  void _fetchMemberDetails() {
     try {
-      final client = SupabaseService.instance.client;
-
-      // Fetch profile and QR code data in parallel
-      final results = await Future.wait<dynamic>([
-        client
-            .from('profiles')
-            .select('name, surname, email, subscription, role, created_at')
-            .eq('id', widget.userId)
-            .maybeSingle(),
-        client
-            .from('user_qr_codes')
-            .select('is_active, expires_at, created_at')
-            .eq('user_id', widget.userId)
-            .eq('is_active', true)
-            .order('created_at', ascending: false)
-            .limit(1),
-      ]);
-
-      final profile = results[0] as Map<String, dynamic>?;
-      final qrCodes = results[1] as List<dynamic>;
-
-      if (!mounted) return;
-
-      if (profile == null) {
-        setState(() {
-          _error = 'Member not found in database';
-          _isLoading = false;
-          // Fall back to QR data
-          _name = widget.qrName;
-          _surname = widget.qrSurname;
-        });
-        return;
-      }
-
-      // Parse profile
-      _name = profile['name'] as String? ?? widget.qrName;
-      _surname = profile['surname'] as String? ?? widget.qrSurname;
-      _email = profile['email'] as String? ?? '';
-      _subscriptionStatus = (profile['subscription'] as String? ?? 'unknown').toLowerCase();
-      final createdAt = profile['created_at'] as String?;
+      _name = widget.member['name']?.toString() ?? '';
+      _surname = widget.member['surname']?.toString() ?? '';
+      _memberId = widget.member['member_id']?.toString() ?? '';
+      _profilePhotoUrl = widget.member['profile_photo_url']?.toString();
+      _membershipActive = widget.member['membership_active'] == true;
+      _subscriptionStatus = _membershipActive ? 'active' : 'inactive';
+      final createdAt = widget.member['member_since']?.toString();
       if (createdAt != null) {
         try {
           final dt = DateTime.parse(createdAt);
@@ -5951,40 +5971,26 @@ class _MemberDetailsSheetState extends State<_MemberDetailsSheet> {
         } catch (_) {}
       }
 
-      // Parse QR code validity
-      if (qrCodes.isNotEmpty) {
-        final qr = qrCodes[0] as Map<String, dynamic>;
-        _qrIsActive = qr['is_active'] == true;
-        _qrExpiresAt = qr['expires_at'] as String?;
-        if (_qrExpiresAt != null) {
-          try {
-            final expiryDate = DateTime.parse(_qrExpiresAt!);
-            _qrIsExpired = expiryDate.isBefore(DateTime.now());
-            final daysLeft = expiryDate.difference(DateTime.now()).inDays;
-            _qrExpiresAt = daysLeft > 0 ? '$daysLeft days' : 'Expired';
-          } catch (_) {}
-        }
-      } else {
-        _qrIsActive = false;
-        _qrExpiresAt = null;
+      _qrIsActive = true;
+      _qrExpiresAt = widget.member['redemption_expires_at']?.toString();
+      if (_qrExpiresAt != null) {
+        try {
+          final expiryDate = DateTime.parse(_qrExpiresAt!);
+          _qrIsExpired = expiryDate.isBefore(DateTime.now());
+          final daysLeft = expiryDate.difference(DateTime.now()).inDays;
+          _qrExpiresAt = daysLeft > 0 ? '$daysLeft days' : 'Expired';
+        } catch (_) {}
       }
-
-      setState(() => _isLoading = false);
     } catch (e) {
-      _logger.e('Error fetching member details: $e');
-      if (!mounted) return;
-      setState(() {
-        // Fall back to QR data on error
-        _name = widget.qrName;
-        _surname = widget.qrSurname;
-        _isLoading = false;
-        // Don't set _error - still show what we have from QR
-      });
+      _error = 'Could not display the verified member details.';
+      _logger.e('Error displaying verified member details: $e');
     }
+    if (!mounted) return;
+    setState(() => _isLoading = false);
   }
 
   bool get _isMemberActive =>
-      _subscriptionStatus == 'active' && _qrIsActive && !_qrIsExpired;
+      _membershipActive && _qrIsActive && !_qrIsExpired;
 
   @override
   Widget build(BuildContext context) {
@@ -6075,14 +6081,19 @@ class _MemberDetailsSheetState extends State<_MemberDetailsSheet> {
         CircleAvatar(
           radius: 36,
           backgroundColor: statusColor.withValues(alpha: 0.15),
-          child: Text(
-            '${_name.isNotEmpty ? _name[0].toUpperCase() : '?'}${_surname.isNotEmpty ? _surname[0].toUpperCase() : '?'}',
-            style: TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-              color: statusColor,
-            ),
-          ),
+          backgroundImage: _profilePhotoUrl?.isNotEmpty == true
+              ? NetworkImage(_profilePhotoUrl!)
+              : null,
+          child: _profilePhotoUrl?.isNotEmpty == true
+              ? null
+              : Text(
+                  '${_name.isNotEmpty ? _name[0].toUpperCase() : '?'}${_surname.isNotEmpty ? _surname[0].toUpperCase() : '?'}',
+                  style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    color: statusColor,
+                  ),
+                ),
         ),
         const SizedBox(height: 12),
         Text(
@@ -6090,15 +6101,6 @@ class _MemberDetailsSheetState extends State<_MemberDetailsSheet> {
           style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
           textAlign: TextAlign.center,
         ),
-
-        if (_email.isNotEmpty) ...[
-          const SizedBox(height: 4),
-          Text(
-            _email,
-            style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
-            textAlign: TextAlign.center,
-          ),
-        ],
 
         const SizedBox(height: 20),
 
@@ -6111,6 +6113,13 @@ class _MemberDetailsSheetState extends State<_MemberDetailsSheet> {
           ),
           child: Column(
             children: [
+              _detailRow(
+                Icons.badge_outlined,
+                'Member ID',
+                _memberId.isEmpty ? 'Verified' : _memberId,
+                kBrandBlue,
+              ),
+              const Divider(height: 20),
               _detailRow(
                 Icons.credit_card,
                 'Subscription',
@@ -6128,7 +6137,7 @@ class _MemberDetailsSheetState extends State<_MemberDetailsSheet> {
                 const Divider(height: 20),
                 _detailRow(
                   Icons.timer_outlined,
-                  'Expires in',
+                  'Checkout valid for',
                   _qrExpiresAt!,
                   kBrandBlue,
                 ),
@@ -6172,7 +6181,26 @@ class _MemberDetailsSheetState extends State<_MemberDetailsSheet> {
 
         const SizedBox(height: 24),
 
-        // Close button
+        if (_isMemberActive) ...[
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: widget.onContinue,
+              icon: const Icon(Icons.point_of_sale),
+              label: const Text('Continue to deal redemption'),
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                backgroundColor: kBrandGreen,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+        ],
+
         SizedBox(
           width: double.infinity,
           child: ElevatedButton(

@@ -28,6 +28,7 @@ class DealAuthorizationService {
     String? dealType,
     Map<String, dynamic>? dealSnapshot,
     String? notes,
+    Map<String, dynamic>? billData,
   }) async {
     try {
       if (kDebugMode) {
@@ -138,6 +139,7 @@ class DealAuthorizationService {
         dealType: dealType ?? discountResponse['deal_type'] as String?,
         dealSnapshot: dealSnapshot ?? discountResponse,
         notes: notes,
+        billData: billData,
       );
 
       // Get member details for notification + TP email

@@ -10,11 +10,20 @@ CREATE TABLE IF NOT EXISTS tp_inquiries (
   business_type TEXT,
   email TEXT NOT NULL,
   contact_number TEXT,
+  sells_fresh_produce BOOLEAN NOT NULL DEFAULT false,
+  sells_alcohol BOOLEAN NOT NULL DEFAULT false,
+  offers_sports_activities BOOLEAN NOT NULL DEFAULT false,
   status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'contacted', 'completed', 'declined')),
   notes TEXT,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
+
+-- Keep existing installations aligned with the interest form payload.
+ALTER TABLE tp_inquiries
+  ADD COLUMN IF NOT EXISTS sells_fresh_produce BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS sells_alcohol BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS offers_sports_activities BOOLEAN NOT NULL DEFAULT false;
 
 -- RLS policies
 ALTER TABLE tp_inquiries ENABLE ROW LEVEL SECURITY;

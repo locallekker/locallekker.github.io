@@ -6,11 +6,14 @@ import '../../services/deal_authorization_service.dart';
 import '../../services/discount_service.dart';
 import '../../services/supabase_service.dart';
 import '../../services/admin_engagement_service.dart';
+import '../../services/in_app_payment_availability_service.dart';
 import 'deal_selection_page.dart'; // Import for BillDiscountDialog
 import 'package:flutter/foundation.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../widgets/branded_app_bar.dart';
 import '../../widgets/website_redirect_overlay.dart';
+import '../../widgets/restaurant_deal_badge.dart';
+import '../members/restaurant_deal_request_page.dart';
 
 class TrustedPartnerShopPage extends StatefulWidget {
   final Map<String, dynamic> partner;
@@ -218,6 +221,24 @@ class _TrustedPartnerShopPageState extends State<TrustedPartnerShopPage> {
         bookingUrl: discount.bookingUrl,
         logoUrl: widget.partner['logo_url'] as String?,
       );
+    } else if (discount.isRestaurantDeal) {
+      if (discount.restaurantConfig == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Please update the app to use this deal.'),
+          ),
+        );
+        return;
+      }
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => RestaurantDealRequestPage(
+            discount: discount,
+            partnerName: widget.partner['name'] as String?,
+          ),
+        ),
+      );
     } else if (discount.isBillDiscount) {
       _showBillDiscountDialog(context, discount);
     } else {
@@ -258,6 +279,53 @@ class _TrustedPartnerShopPageState extends State<TrustedPartnerShopPage> {
     double? discountedPrice;
     double? savingsAmount;
     String? selectedPaymentMethod;
+    final availabilityService = InAppPaymentAvailabilityService();
+    bool? inAppAvailable = availabilityService.cachedAvailability(discount.id);
+    bool dialogOpen = true;
+    StateSetter? setDialogState;
+    final partnerName = widget.partner['name'] as String?;
+
+    if (inAppAvailable == null) {
+      unawaited(
+        availabilityService.isAvailableForDiscount(discount.id).then((value) {
+          inAppAvailable = value;
+          if (dialogOpen) setDialogState?.call(() {});
+        }),
+      );
+    }
+
+    Future<void> switchToPayInStore(BuildContext dialogContext) async {
+      inAppAvailable = false;
+      if (dialogOpen) {
+        setDialogState?.call(() => selectedPaymentMethod = 'pos');
+      }
+      await availabilityService.showUnavailableDialog(
+        dialogContext,
+        discountId: discount.id,
+        partnerName: partnerName,
+      );
+    }
+
+    Future<void> selectPaymentMethod(
+      BuildContext dialogContext,
+      String? value,
+    ) async {
+      if (value != 'in_app') {
+        setDialogState?.call(() => selectedPaymentMethod = value);
+        return;
+      }
+      final available = inAppAvailable ??
+          await availabilityService.isAvailableForDiscount(discount.id);
+      if (!dialogOpen) return;
+      if (available) {
+        setDialogState?.call(() {
+          inAppAvailable = true;
+          selectedPaymentMethod = 'in_app';
+        });
+      } else if (dialogContext.mounted) {
+        await switchToPayInStore(dialogContext);
+      }
+    }
 
     void recalculateTotals() {
       if (discount.isPercentItem) {
@@ -292,6 +360,7 @@ class _TrustedPartnerShopPageState extends State<TrustedPartnerShopPage> {
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, setState) {
+          setDialogState = setState;
           return AlertDialog(
             title: Text(discount.name),
             content: SizedBox(
@@ -479,13 +548,20 @@ class _TrustedPartnerShopPageState extends State<TrustedPartnerShopPage> {
                       value: 'in_app',
                       groupValue: selectedPaymentMethod,
                       onChanged: (value) =>
-                          setState(() => selectedPaymentMethod = value),
+                          selectPaymentMethod(context, value),
                       activeColor: _kRequestGreen,
                       contentPadding: EdgeInsets.zero,
                       dense: true,
-                      title: const Text('In-App Payment'),
-                      subtitle: const Text(
-                        'Pay securely in the app after the partner approves',
+                      title: Text(
+                        'In-App Payment',
+                        style: inAppAvailable == false
+                            ? const TextStyle(color: Colors.grey)
+                            : null,
+                      ),
+                      subtitle: Text(
+                        inAppAvailable == false
+                            ? 'Not available for this partner yet - please pay in store'
+                            : 'Pay securely in the app after the partner approves',
                       ),
                     ),
                     RadioListTile<String>(
@@ -602,6 +678,14 @@ class _TrustedPartnerShopPageState extends State<TrustedPartnerShopPage> {
                             );
                           }
                         } catch (e) {
+                          if (InAppPaymentAvailabilityService.isUnavailableError(
+                            e,
+                          )) {
+                            if (context.mounted) {
+                              await switchToPayInStore(context);
+                            }
+                            return;
+                          }
                           if (mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
@@ -622,7 +706,7 @@ class _TrustedPartnerShopPageState extends State<TrustedPartnerShopPage> {
           );
         },
       ),
-    );
+    ).whenComplete(() => dialogOpen = false);
   }
 
   @override
@@ -934,6 +1018,12 @@ class _TrustedPartnerShopPageState extends State<TrustedPartnerShopPage> {
                                               ),
                                             ],
                                           ),
+                                        )
+                                      else if (discount.isRestaurantDeal)
+                                        RestaurantDealBadge(
+                                          dealType: discount.dealType,
+                                          customData: discount.customData,
+                                          scheduleData: discount.scheduleData,
                                         )
                                       else if (discount.isBillDiscount)
                                         Container(

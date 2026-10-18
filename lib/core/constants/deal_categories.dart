@@ -7,6 +7,14 @@ const String kLocalSipsCategory = 'Local Sips';
 /// Food and beverage trusted partners.
 const String kLocalEatsCategory = 'Local Eats';
 const String kFoodBusinessCategory = 'Food & Beverage';
+const String kRestaurantBusinessCategory = 'Restaurant';
+
+/// Business categories (businesses.category) that belong to Local Eats.
+/// These partners may only create the restaurant deal types.
+const List<String> kLocalEatsBusinessCategories = [
+  kFoodBusinessCategory,
+  kRestaurantBusinessCategory,
+];
 
 /// Local sports, fitness and active-lifestyle partners (clubs, coaches, gyms).
 const String kLocallyActiveCategory = 'Locally Active';

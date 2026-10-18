@@ -1,3 +1,5 @@
+import 'restaurant_deal.dart';
+
 class Discount {
   /// Admin-only deal that sends members to the partner's website.
   static const String websiteRedirectType = 'website_redirect';
@@ -150,6 +152,15 @@ class Discount {
 
   String? get bookingUrl => customData?['booking_url'] as String?;
 
+  bool get isRestaurantDeal => RestaurantDealType.isRestaurantKey(dealType);
+
+  RestaurantDealType? get restaurantType => RestaurantDealType.fromKey(dealType);
+
+  RestaurantDealConfig? get restaurantConfig {
+    final type = restaurantType;
+    return type == null ? null : RestaurantDealConfig(type, customData);
+  }
+
   double get dealPrice {
     // Type-aware pricing
     if (isBuyGet) {
@@ -195,6 +206,14 @@ class Discount {
 
     if (isBookingRedirect) {
       return 'Book now';
+    }
+
+    final restaurant = restaurantConfig;
+    if (restaurant != null) {
+      return restaurant.headline;
+    }
+    if (isRestaurantDeal) {
+      return 'Restaurant deal';
     }
 
     if (isFreeDelivery) {

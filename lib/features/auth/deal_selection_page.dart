@@ -7,9 +7,14 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../core/constants/deal_categories.dart';
 import '../../models/discount.dart';
 import '../../models/deal_schedule.dart';
+import '../../models/restaurant_deal.dart';
+import '../../widgets/restaurant_deal_badge.dart';
+import '../members/restaurant_deal_request_page.dart';
+import '../business/restaurant_deal_dialog.dart';
 import '../../services/discount_service.dart';
 import '../../services/supabase_service.dart';
 import '../../services/admin_engagement_service.dart';
+import '../../services/in_app_payment_availability_service.dart';
 import '../../widgets/deal_image_preview.dart';
 import '../../widgets/website_redirect_overlay.dart';
 import '../admin/website_redirect_deal_dialog.dart';
@@ -239,6 +244,9 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
         } else if (rawDealType == Discount.bookingRedirectType) {
           dealTypeKey = Discount.bookingRedirectType;
           dealTypeLabel = 'Booking Deal';
+        } else if (RestaurantDealType.isRestaurantKey(rawDealType)) {
+          dealTypeKey = rawDealType!;
+          dealTypeLabel = 'Restaurant Deal';
         } else if (rawDealType == 'buy_get') {
           dealTypeKey = 'buy_get';
           dealTypeLabel = 'Buy/Get';
@@ -315,6 +323,28 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
       _openBookingRedirect(deal);
       return;
     }
+    if (_isRestaurantDeal(deal)) {
+      final discount = Discount.fromJson(deal);
+      if (discount.restaurantConfig == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Please update the app to use this deal.'),
+          ),
+        );
+        return;
+      }
+      final partner = deal['trusted_partners'] as Map<String, dynamic>?;
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => RestaurantDealRequestPage(
+            discount: discount,
+            partnerName: partner?['business_name'] as String?,
+          ),
+        ),
+      );
+      return;
+    }
     final dealId = deal['id'] as String;
     final isWeightBased = (deal['is_weight_based'] as bool?) ?? false;
     final quantity = _quantities[dealId] ?? (isWeightBased ? 100 : 1);
@@ -338,6 +368,9 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
 
   bool _isBookingRedirect(Map<String, dynamic> deal) =>
       deal['deal_type'] == Discount.bookingRedirectType;
+
+  bool _isRestaurantDeal(Map<String, dynamic> deal) =>
+      RestaurantDealType.isRestaurantKey(deal['deal_type']?.toString());
 
   Future<void> _openWebsiteRedirect(Map<String, dynamic> deal) {
     final partner = deal['trusted_partners'] as Map<String, dynamic>?;
@@ -417,6 +450,20 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
   }
 
   Future<void> _editDealAsAdmin(Map<String, dynamic> deal) async {
+    if (_isRestaurantDeal(deal)) {
+      final discount = Discount.fromJson(deal);
+      final saved = await showDialog<bool>(
+        context: context,
+        builder: (context) => RestaurantDealDialog(
+          trustedPartnerId: discount.trustedPartnerId,
+          existing: discount,
+        ),
+      );
+      if (saved == true && mounted) {
+        await _loadAvailableDeals(forceRefresh: true);
+      }
+      return;
+    }
     if (_isWebsiteRedirect(deal)) {
       final discount = Discount.fromJson(deal);
       final saved = await showDialog<bool>(
@@ -1425,6 +1472,12 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
                 _buildVisitWebsiteBadge()
               else if (isBookingRedirect)
                 _buildBookNowBadge()
+              else if (_isRestaurantDeal(deal))
+                RestaurantDealBadge(
+                  dealType: deal['deal_type']?.toString(),
+                  customData: deal['custom_data'] as Map<String, dynamic>?,
+                  scheduleData: deal['schedule_data'] as Map<String, dynamic>?,
+                )
               else if (isBillDiscount)
                 Container(
                   padding: const EdgeInsets.symmetric(
@@ -2265,6 +2318,12 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
                       _buildVisitWebsiteBadge()
                     else if (discount.isBookingRedirect)
                       _buildBookNowBadge()
+                    else if (discount.isRestaurantDeal)
+                      RestaurantDealBadge(
+                        dealType: discount.dealType,
+                        customData: discount.customData,
+                        scheduleData: discount.scheduleData,
+                      )
                     else if (discount.isBillDiscount)
                       Container(
                         padding: const EdgeInsets.symmetric(
@@ -2545,11 +2604,57 @@ class _BillDiscountDialogState extends State<BillDiscountDialog> {
   final TextEditingController _tipController = TextEditingController();
   String _paymentMethod =
       'in_app'; // Default to in-app payment (consistent with all other deal types)
+  bool? _inAppAvailable; // null while checking partner banking
 
   @override
   void initState() {
     super.initState();
     unawaited(AdminEngagementService().recordDealOpen(widget.discount.id));
+    unawaited(_loadInAppAvailability());
+  }
+
+  Future<void> _loadInAppAvailability() async {
+    final available = await InAppPaymentAvailabilityService()
+        .isAvailableForDiscount(widget.discount.id);
+    if (!mounted) return;
+    setState(() {
+      _inAppAvailable = available;
+      if (!available && _paymentMethod == 'in_app') {
+        _paymentMethod = 'pos';
+      }
+    });
+  }
+
+  Future<void> _switchToPayInStore() async {
+    setState(() {
+      _inAppAvailable = false;
+      _paymentMethod = 'pos';
+    });
+    await InAppPaymentAvailabilityService().showUnavailableDialog(
+      context,
+      discountId: widget.discount.id,
+      partnerName: widget.trustedPartnerName,
+    );
+  }
+
+  Future<void> _selectPaymentMethod(String method) async {
+    if (method != 'in_app') {
+      setState(() => _paymentMethod = method);
+      return;
+    }
+    final available = _inAppAvailable ??
+        await InAppPaymentAvailabilityService().isAvailableForDiscount(
+          widget.discount.id,
+        );
+    if (!mounted) return;
+    if (available) {
+      setState(() {
+        _inAppAvailable = true;
+        _paymentMethod = 'in_app';
+      });
+    } else {
+      await _switchToPayInStore();
+    }
   }
 
   @override
@@ -2787,25 +2892,35 @@ class _BillDiscountDialogState extends State<BillDiscountDialog> {
               ),
               const SizedBox(height: 8),
               SegmentedButton<String>(
-                segments: const [
-                  ButtonSegment<String>(
+                segments: [
+                  const ButtonSegment<String>(
                     value: 'pos',
                     label: Text('In-Store Payment'),
                     icon: Icon(Icons.point_of_sale, size: 20),
                   ),
                   ButtonSegment<String>(
                     value: 'in_app',
-                    label: Text('In-App Payment'),
-                    icon: Icon(Icons.smartphone, size: 20),
+                    label: Text(
+                      'In-App Payment',
+                      style: _inAppAvailable == false
+                          ? const TextStyle(color: Colors.grey)
+                          : null,
+                    ),
+                    icon: const Icon(Icons.smartphone, size: 20),
                   ),
                 ],
                 selected: {_paymentMethod},
                 onSelectionChanged: (Set<String> newSelection) {
-                  setState(() {
-                    _paymentMethod = newSelection.first;
-                  });
+                  _selectPaymentMethod(newSelection.first);
                 },
               ),
+              if (_inAppAvailable == false) ...[
+                const SizedBox(height: 8),
+                Text(
+                  '${widget.trustedPartnerName} can\'t accept in-app payments yet, so you\'ll pay in store.',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                ),
+              ],
               const SizedBox(height: 20),
 
               // Excluded Items
@@ -3226,6 +3341,13 @@ class _BillDiscountDialogState extends State<BillDiscountDialog> {
                             // Note: Savings stats will be refreshed when user returns to the page
                           } catch (e) {
                             if (!mounted) return;
+
+                            if (InAppPaymentAvailabilityService.isUnavailableError(
+                              e,
+                            )) {
+                              await _switchToPayInStore();
+                              return;
+                            }
 
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
