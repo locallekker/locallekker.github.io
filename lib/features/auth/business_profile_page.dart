@@ -485,12 +485,8 @@ class _BusinessProfilePageState extends State<BusinessProfilePage> {
       final imageInfo = await completer.future.timeout(const Duration(seconds: 6));
       final rawWidth = imageInfo.image.width;
       final rawHeight = imageInfo.image.height;
-      final width = (rawWidth is num && rawWidth > 0)
-          ? rawWidth.toDouble()
-          : 1.0;
-      final height = (rawHeight is num && rawHeight > 0)
-          ? rawHeight.toDouble()
-          : 1.0;
+      final width = rawWidth > 0 ? rawWidth.toDouble() : 1.0;
+      final height = rawHeight > 0 ? rawHeight.toDouble() : 1.0;
       if (!mounted) return;
       setState(() {
         _logoPreviewAspectRatio = (width / height).clamp(0.6, 1.8).toDouble();

@@ -48,6 +48,7 @@ class _PaystackWebViewPageState extends State<PaystackWebViewPage> with WidgetsB
   bool _paymentHandled = false; // Once true, no detection mechanism can re-trigger
   String _processingStatus = 'Processing payment...';
   bool _pollingActive = false; // Prevent multiple concurrent polling timers
+  bool _apiPollInFlight = false; // Prevent overlapping Paystack verify requests
   Timer? _successCheckTimer;
   Timer? _manualVerifyTimer;
   Timer? _apiVerifyTimer; // Direct Paystack API polling (most reliable)
@@ -585,9 +586,15 @@ class _PaystackWebViewPageState extends State<PaystackWebViewPage> with WidgetsB
           timer.cancel();
           return;
         }
+        if (_apiPollInFlight) {
+          _logger.d('API verify poll #$apiPollCount skipped: previous check still running');
+          if (apiPollCount >= maxApiPolls) timer.cancel();
+          return;
+        }
 
         _logger.d('API verify poll #$apiPollCount/$maxApiPolls for ref: $ref');
 
+        _apiPollInFlight = true;
         try {
           final result = await _paystackService.verifyTransaction(ref);
           if (result != null && !_paymentHandled && !_processingPayment) {
@@ -603,6 +610,8 @@ class _PaystackWebViewPageState extends State<PaystackWebViewPage> with WidgetsB
           }
         } catch (e) {
           _logger.d('API verify poll #$apiPollCount failed: $e');
+        } finally {
+          _apiPollInFlight = false;
         }
 
         if (apiPollCount >= maxApiPolls) {
@@ -1292,7 +1301,7 @@ class _PaystackWebViewPageState extends State<PaystackWebViewPage> with WidgetsB
                             ),
                             const SizedBox(height: 12),
                             Text(
-                              'Please wait, do not close this screen.',
+                              'Please wait, do not close this screen or pay again.',
                               style: TextStyle(
                                 fontSize: 14,
                                 color: Colors.grey.shade600,

@@ -12,11 +12,13 @@
 - [x] `.env.template` documented with plan code placeholders
 
 ### Database
+- [ ] Run `supabase/monitoring/payment_health_checks.sql` (read-only); check 7 should show `present = true` for every row
 - [ ] Run `add_paystack_subscription_code.sql` in Supabase SQL Editor
 - [ ] Verify column exists: `SELECT paystack_subscription_code FROM subscriptions LIMIT 1;`
 - [ ] Check index created: `\di idx_subscriptions_paystack_code` (if using psql)
 
 ### Environment Configuration
+- [ ] Run `dart run tool/check_release_config.dart` (exits non-zero on blocking problems; never prints values)
 - [ ] Add `PAYSTACK_MONTHLY_PLAN_CODE=PLN_xxxxx` to `.env`
 - [ ] Verify `.env` loaded in app (check logs on startup)
 - [ ] Restart Flutter app to load new environment variable

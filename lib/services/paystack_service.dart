@@ -669,28 +669,6 @@ class PaystackService {
     return null;
   }
 
-  // Helper to get a displayable member name
-  Future<String> _getMemberDisplayName(
-    String userId,
-    String fallbackEmail,
-  ) async {
-    try {
-      final profile = await Supabase.instance.client
-          .from('profiles')
-          .select('name, surname')
-          .eq('id', userId)
-          .maybeSingle()
-          .timeout(const Duration(seconds: 3));
-      if (profile != null) {
-        final first = (profile['name'] as String?)?.trim() ?? '';
-        final last = (profile['surname'] as String?)?.trim() ?? '';
-        final combined = [first, last].where((s) => s.isNotEmpty).join(' ');
-        if (combined.isNotEmpty) return combined;
-      }
-    } catch (_) {}
-    return 'Member $fallbackEmail';
-  }
-
   Future<void> savePaystackCustomerCode({
     required String userId,
     required String customerCode,

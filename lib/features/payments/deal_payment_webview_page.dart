@@ -12,6 +12,7 @@ import 'package:flutter/foundation.dart';
 import 'package:local_lekker/widgets/branded_app_bar.dart';
 import 'package:local_lekker/widgets/browser_payment_option.dart';
 import 'package:local_lekker/core/utils/display_name_helpers.dart';
+import 'package:local_lekker/core/utils/safe_retry.dart';
 import 'package:local_lekker/services/web_checkout.dart';
 
 class DealPaymentWebViewPage extends StatefulWidget {
@@ -58,6 +59,8 @@ class _DealPaymentWebViewPageState extends State<DealPaymentWebViewPage> with Wi
   bool _showManualVerify = false;
   bool _paymentDeclined = false; // Paystack showed an "unable to process" / risk-block page
   bool _pollingActive = false; // Prevent multiple concurrent polling timers
+  bool _apiPollInFlight = false; // Prevent overlapping Paystack verify requests
+  bool _successHandlerStarted = false; // Success handler must run only once
   Timer? _manualVerifyTimer;
   Timer? _apiVerifyTimer; // Direct Paystack API polling (most reliable)
   RealtimeChannel? _dealChannel;
@@ -407,6 +410,12 @@ class _DealPaymentWebViewPageState extends State<DealPaymentWebViewPage> with Wi
 
   Future<void> _handlePaymentSuccess({String? url, Map<String, dynamic>? verifiedDetails}) async {
     // CRITICAL: Only reach this through _verifyAndHandlePayment()
+    if (_successHandlerStarted) {
+      _logger.w('Deal payment success handler already running; ignoring duplicate call');
+      return;
+    }
+    _successHandlerStarted = true;
+
     _successCheckTimer?.cancel();
     _apiVerifyTimer?.cancel();
     _manualVerifyTimer?.cancel();
@@ -627,6 +636,17 @@ class _DealPaymentWebViewPageState extends State<DealPaymentWebViewPage> with Wi
     _logger.i('Payment processed; auto-navigation initiated');
   }
 
+  Future<bool> _receiptRowExists(String table, String receiptNumber) async {
+    final row = await _supabase
+        .from(table)
+        .select('id')
+        .eq('deal_authorization_id', widget.dealId)
+        .eq('receipt_number', receiptNumber)
+        .limit(1)
+        .maybeSingle();
+    return row != null;
+  }
+
   Future<void> _autoGenerateReceipt() async {
     // Prevent duplicate receipt generation
     if (_receiptGenerated) {
@@ -809,21 +829,28 @@ class _DealPaymentWebViewPageState extends State<DealPaymentWebViewPage> with Wi
       }
 
       try {
-        final virtualReceiptResponse = await _supabase
-            .from('virtual_receipts')
-            .insert({
-              'deal_authorization_id': widget.dealId,
-              'receipt_number': receiptNumber,
-              'receipt_data': receiptData,
-              'qr_code': qrCode,
-            })
-            .select()
-            .single();
+        await runWithSafeRetry(
+          action: () async {
+            final virtualReceiptResponse = await _supabase
+                .from('virtual_receipts')
+                .insert({
+                  'deal_authorization_id': widget.dealId,
+                  'receipt_number': receiptNumber,
+                  'receipt_data': receiptData,
+                  'qr_code': qrCode,
+                })
+                .select()
+                .single();
 
-        _logger.i('✅ Virtual receipt created: ${virtualReceiptResponse['id']}');
-        if (kDebugMode) {
-          print('✅ Virtual receipt ID: ${virtualReceiptResponse['id']}');
-        }
+            _logger.i('✅ Virtual receipt created: ${virtualReceiptResponse['id']}');
+            if (kDebugMode) {
+              print('✅ Virtual receipt ID: ${virtualReceiptResponse['id']}');
+            }
+          },
+          alreadyDone: () => _receiptRowExists('virtual_receipts', receiptNumber),
+          onRetry: (attempt, e) =>
+              _logger.w('🧾 Retrying virtual receipt insert (attempt $attempt): $e'),
+        );
       } catch (e, stackTrace) {
         _logger.e('❌ VIRTUAL_RECEIPTS INSERT FAILED: $e');
         if (kDebugMode) {
@@ -866,22 +893,27 @@ class _DealPaymentWebViewPageState extends State<DealPaymentWebViewPage> with Wi
       }
 
       try {
-        await _supabase.from('deal_receipts').insert({
-          'member_id': memberData?['id'],
-          'trusted_partner_id': trustedPartnerId,
-          'business_id': businessId,
-          'deal_authorization_id': widget.dealId,
-          'receipt_number': receiptNumber,
-          'amount': dealData['amount'],
-          'business_name': businessDisplayName,
-          'business_contact': businessData?['contact_number'],
-          'business_email': businessData?['contact_email'],
-          'discount_name': discountData?['name'],
-          'member_name': memberDisplayName,
-          'member_email': memberData?['email'],
-          'member_phone': memberData?['contact'],
-          'payment_method': paymentMethod,
-        });
+        await runWithSafeRetry(
+          action: () => _supabase.from('deal_receipts').insert({
+            'member_id': memberData?['id'],
+            'trusted_partner_id': trustedPartnerId,
+            'business_id': businessId,
+            'deal_authorization_id': widget.dealId,
+            'receipt_number': receiptNumber,
+            'amount': dealData['amount'],
+            'business_name': businessDisplayName,
+            'business_contact': businessData?['contact_number'],
+            'business_email': businessData?['contact_email'],
+            'discount_name': discountData?['name'],
+            'member_name': memberDisplayName,
+            'member_email': memberData?['email'],
+            'member_phone': memberData?['contact'],
+            'payment_method': paymentMethod,
+          }),
+          alreadyDone: () => _receiptRowExists('deal_receipts', receiptNumber),
+          onRetry: (attempt, e) =>
+              _logger.w('🧾 Retrying deal receipt insert (attempt $attempt): $e'),
+        );
 
         _logger.i('✅ Deal receipt created successfully');
         if (kDebugMode) {
@@ -1552,9 +1584,15 @@ class _DealPaymentWebViewPageState extends State<DealPaymentWebViewPage> with Wi
           timer.cancel();
           return;
         }
+        if (_apiPollInFlight) {
+          _logger.d('API verify poll #$apiPollCount skipped: previous check still running');
+          if (apiPollCount >= maxApiPolls) timer.cancel();
+          return;
+        }
 
         _logger.d('API verify poll #$apiPollCount/$maxApiPolls for ref: $ref');
 
+        _apiPollInFlight = true;
         try {
           final result = await PaystackService().verifyTransaction(ref);
           if (result != null && !_paymentVerified && !_processingPayment) {
@@ -1566,6 +1604,8 @@ class _DealPaymentWebViewPageState extends State<DealPaymentWebViewPage> with Wi
           }
         } catch (e) {
           _logger.d('API verify poll #$apiPollCount failed: $e');
+        } finally {
+          _apiPollInFlight = false;
         }
 
         if (apiPollCount >= maxApiPolls) {
@@ -2110,6 +2150,15 @@ class _DealPaymentWebViewPageState extends State<DealPaymentWebViewPage> with Wi
                             fontSize: 18,
                             fontWeight: FontWeight.w500,
                           ),
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          'Please wait, do not close this screen or pay again.',
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: Colors.grey.shade600,
+                          ),
+                          textAlign: TextAlign.center,
                         ),
                       ] else ...[
                         Container(

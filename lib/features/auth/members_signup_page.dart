@@ -7,7 +7,6 @@ import 'dart:async';
 import '../../services/supabase_service.dart';
 import '../../services/navigation_service.dart';
 import '../../services/promotion_campaign_service.dart';
-import '../payments/payments_feature.dart';
 import 'widgets/otp_verification_dialog.dart';
 import 'welcome_page.dart';
 

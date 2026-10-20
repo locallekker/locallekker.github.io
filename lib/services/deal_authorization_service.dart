@@ -775,7 +775,7 @@ class DealAuthorizationService {
 
   Future<String> _resolveDiscountName(DealAuthorization deal) async {
     // Prefer in-memory relationship when present.
-    final joinedName = deal.discount?.name?.trim();
+    final joinedName = deal.discount?.name.trim();
     if (joinedName != null && joinedName.isNotEmpty) {
       return joinedName;
     }

@@ -564,7 +564,7 @@ class DealApprovalPopupService {
                   ),
                 ),
                 const SizedBox(height: 12),
-                if (memberQrCode != null && memberQrCode!.trim().isNotEmpty)
+                if (memberQrCode != null && memberQrCode.trim().isNotEmpty)
                   Center(
                     child: Container(
                       padding: const EdgeInsets.all(12),
@@ -584,7 +584,7 @@ class DealApprovalPopupService {
                           ),
                           const SizedBox(height: 8),
                           CustomQrCode(
-                            data: memberQrCode!,
+                            data: memberQrCode,
                             logoAssetPath: 'assets/heart_flag.png',
                             size: 180,
                           ),

@@ -13,6 +13,15 @@ analyzer:
   exclude:
     - print_statement_backups_20251113_080522/**
     - REV_01/**
+    - ARCHIVE_REV_01/**
+    - ui_snapshots/**
+    - _archived_cleanup_scripts/**
+    - _archived_diagnostics/**
+    - _archived_legacy/**
+    - _archived_old_fixes/**
+    - supabase_backup_last_working_20250924_163328/**
+    - release_backups/**
+    - database_backups/**
     - "*.dart"  # Exclude root-level .dart scripts (CLI tools, not part of app)
     - "*.sql"   # Exclude SQL files
 
