@@ -669,6 +669,31 @@ class SubscriptionService {
 
       if (expiryDate.isBefore(now)) {
         final shouldAutoRenew = subscription['auto_renew'] == true;
+        final latestSub = await _client
+            .from('subscriptions')
+            .select('paystack_subscription_code')
+            .eq('user_id', userId)
+            .order('created_at', ascending: false)
+            .limit(1)
+            .maybeSingle();
+        final paystackSubscriptionCode =
+            latestSub?['paystack_subscription_code'] as String?;
+
+        final isPaystackManagedAutoRenew =
+            paystackSubscriptionCode != null &&
+            paystackSubscriptionCode.trim().isNotEmpty;
+
+        if (shouldAutoRenew &&
+            isPaystackManagedAutoRenew &&
+            now.difference(expiryDate) < const Duration(hours: 36)) {
+          if (kDebugMode) {
+            print(
+              '⏳ Paystack-managed auto-renew detected; skipping local renewal charge during grace window',
+            );
+          }
+          return false;
+        }
+
         if (shouldAutoRenew) {
           if (kDebugMode) {
             print('🔁 Subscription expired, attempting auto-renew charge...');
@@ -834,11 +859,25 @@ class SubscriptionService {
       final subscriptionPlan = profile['subscription_plan'] as String?;
       final currentSubscription = await _client
           .from('subscriptions')
-          .select('id, current_period_end, plan_type, renewal_charge_cents')
+          .select(
+            'id, current_period_end, plan_type, renewal_charge_cents, paystack_subscription_code',
+          )
           .eq('user_id', userId)
           .order('created_at', ascending: false)
           .limit(1)
           .maybeSingle();
+
+      final paystackSubscriptionCode =
+          currentSubscription?['paystack_subscription_code'] as String?;
+      if (paystackSubscriptionCode != null &&
+          paystackSubscriptionCode.trim().isNotEmpty) {
+        if (kDebugMode) {
+          print(
+            '[processSubscriptionRenewal] Skipping local charge because Paystack recurring subscription is active ($paystackSubscriptionCode)',
+          );
+        }
+        return false;
+      }
 
       final planType = (currentSubscription?['plan_type'] as String?) ??
           subscriptionPlan ??

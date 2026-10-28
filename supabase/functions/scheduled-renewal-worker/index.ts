@@ -27,6 +27,7 @@ interface DueSubscription {
   plan_type: string
   renewal_charge_cents: number
   current_period_end: string
+  paystack_subscription_code: string | null
   email: string
   paystack_customer_code: string | null
   authorization_code: string | null
@@ -127,20 +128,6 @@ async function renewSubscription(
 
   console.log(`Processing renewal for user=${user_id} sub=${subscription_id} amount=${chargeAmountCents}`)
 
-  // â”€â”€ Skip if no saved card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  if (!sub.authorization_code) {
-    console.warn(`No primary card for user ${user_id} â€” skipping`)
-    await logRenewalResult(supabase, {
-      user_id,
-      subscription_id,
-      status: "failed",
-      failure_reason: "No saved primary card on file",
-      amount_cents: chargeAmountCents,
-    })
-    await markSubscriptionFailed(supabase, subscription_id, user_id, "No saved primary card on file")
-    return { user_id, subscription_id, status: "skipped", reason: "no_card" }
-  }
-
   const { data: claimed, error: claimError } = await supabase.rpc(
     "claim_subscription_renewal",
     { p_subscription_id: subscription_id },
@@ -158,7 +145,7 @@ async function renewSubscription(
   // cancellation committed while this worker was fetching cannot be charged.
   const { data: currentSubscription, error: currentSubscriptionError } = await supabase
     .from("subscriptions")
-    .select("status, auto_renew, renewal_in_progress_at")
+    .select("status, auto_renew, renewal_in_progress_at, paystack_subscription_code")
     .eq("id", subscription_id)
     .maybeSingle()
   if (
@@ -172,6 +159,29 @@ async function renewSubscription(
     })
     console.log(`Skipping ${subscription_id}: subscription was cancelled or changed`)
     return { user_id, subscription_id, status: "skipped", reason: "cancelled_or_changed" }
+  }
+
+  if (currentSubscription?.paystack_subscription_code) {
+    await supabase.rpc("release_subscription_renewal_claim", {
+      p_subscription_id: subscription_id,
+    })
+    console.log(
+      `Skipping ${subscription_id}: Paystack-managed recurring subscription (${currentSubscription.paystack_subscription_code})`,
+    )
+    return { user_id, subscription_id, status: "skipped", reason: "paystack_managed_recurring" }
+  }
+
+  if (!sub.authorization_code) {
+    console.warn(`No primary card for user ${user_id} - skipping`)
+    await logRenewalResult(supabase, {
+      user_id,
+      subscription_id,
+      status: "failed",
+      failure_reason: "No saved primary card on file",
+      amount_cents: chargeAmountCents,
+    })
+    await markSubscriptionFailed(supabase, subscription_id, user_id, "No saved primary card on file")
+    return { user_id, subscription_id, status: "skipped", reason: "no_card" }
   }
 
   // â”€â”€ Charge via Paystack charge_authorization â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

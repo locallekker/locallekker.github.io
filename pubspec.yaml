@@ -1,7 +1,7 @@
 name: local_lekker
 description: "Local Lekker - Smart receipt scanning and local business payments. Get instant discounts and pay digitally at your favorite local businesses."
 publish_to: 'none'
-version: 1.0.8+56
+version: 1.0.9+57
 
 environment:
   sdk: ^3.9.0
