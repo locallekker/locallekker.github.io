@@ -1,0 +1,1 @@
+-- Add quantity column to deal_authorizations table ALTER TABLE deal_authorizations ADD COLUMN IF NOT EXISTS quantity INTEGER;

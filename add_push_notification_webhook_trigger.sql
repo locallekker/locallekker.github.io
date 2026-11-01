@@ -1,0 +1,66 @@
+-- Database webhook trigger: send FCM push notification on every new notification INSERT
+--
+-- ⚠️ ON HOLD: This push-notification trigger is intentionally NOT active yet.
+-- In-app notifications (rows in the notifications table) work without it — the
+-- app reads them directly. This trigger only adds device push (FCM) wake-ups
+-- and is deferred until further app updates. Leave commented out until ready.
+--
+-- This uses Supabase's pg_net extension to call the send-push-notification Edge Function
+-- whenever a row is inserted into the notifications table.
+--
+-- IMPORTANT: You must also configure the webhook via the Supabase Dashboard:
+--   1. Go to Database → Webhooks
+--   2. Create a new webhook:
+--      - Name: send_push_notification_on_insert
+--      - Table: notifications
+--      - Events: INSERT
+--      - Type: Supabase Edge Function
+--      - Edge Function: send-push-notification
+--      - HTTP Headers: Authorization: Bearer <SUPABASE_SERVICE_ROLE_KEY>
+--
+-- Alternatively, if you prefer a SQL-only approach using pg_net (uncomment below):
+
+-- Enable pg_net if not already enabled
+-- CREATE EXTENSION IF NOT EXISTS pg_net WITH SCHEMA extensions;
+
+-- CREATE OR REPLACE FUNCTION public.trigger_send_push_notification()
+-- RETURNS TRIGGER
+-- LANGUAGE plpgsql
+-- SECURITY DEFINER
+-- AS $$
+-- DECLARE
+--   edge_function_url TEXT;
+--   service_role_key TEXT;
+-- BEGIN
+--   -- These must match your Supabase project
+--   edge_function_url := current_setting('app.settings.supabase_url', true)
+--     || '/functions/v1/send-push-notification';
+--   service_role_key := current_setting('app.settings.service_role_key', true);
+--
+--   -- Fire-and-forget HTTP POST to the edge function
+--   PERFORM extensions.http_post(
+--     url := edge_function_url,
+--     body := json_build_object(
+--       'record', row_to_json(NEW),
+--       'type', 'INSERT',
+--       'table', 'notifications',
+--       'schema', 'public'
+--     )::text,
+--     headers := json_build_object(
+--       'Content-Type', 'application/json',
+--       'Authorization', 'Bearer ' || service_role_key
+--     )::jsonb
+--   );
+--
+--   RETURN NEW;
+-- END;
+-- $$;
+
+-- CREATE TRIGGER on_notification_insert_send_push
+--   AFTER INSERT ON public.notifications
+--   FOR EACH ROW
+--   EXECUTE FUNCTION public.trigger_send_push_notification();
+
+-- NOTE: The recommended approach is to use the Supabase Dashboard to create a
+-- Database Webhook (which handles pg_net setup automatically).
+-- See the setup guide in FIREBASE_PUSH_NOTIFICATION_SETUP.md for step-by-step instructions.

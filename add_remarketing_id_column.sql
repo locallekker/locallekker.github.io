@@ -1,0 +1,1 @@
+-- Add missing remarketing_id column to payments table -- This column is required by PayFast for payment tracking ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS remarketing_id TEXT;

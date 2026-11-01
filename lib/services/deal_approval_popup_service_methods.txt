@@ -1,0 +1,308 @@
+
+  Future<void> _showBankTransferDialog(
+    BuildContext context,
+    DealAuthorization deal,
+    String businessName,
+    String discountName,
+    Map<String, dynamic> memberBankDetails,
+  ) async {
+    final tpBankDetails = await _supabase
+        .from('trusted_partner_bank_accounts')
+        .select('*')
+        .eq('trusted_partner_id', deal.trustedPartnerId)
+        .maybeSingle();
+
+    if (tpBankDetails == null) {
+      throw Exception('Trusted partner bank details not found');
+    }
+
+    if (!context.mounted) return;
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          title: const Row(
+            children: [
+              Icon(Icons.account_balance, color: Colors.blue, size: 32),
+              SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Bank Transfer Payment',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Complete your payment for $discountName at $businessName using bank transfer.',
+                  style: const TextStyle(fontSize: 14),
+                ),
+                const SizedBox(height: 20),
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.green.withAlpha(25),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.green),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Amount to Transfer:',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
+                      ),
+                      Text(
+                        'R${deal.amount?.toStringAsFixed(2) ?? '0.00'}',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 24,
+                          color: Colors.green,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+                const Text(
+                  'Transfer FROM (Your Bank):',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                    color: Colors.black87,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade100,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildBankDetailRow('Account Holder', memberBankDetails['bank_account_holder'] ?? 'N/A'),
+                      _buildBankDetailRow('Bank', memberBankDetails['bank_name'] ?? 'N/A'),
+                      _buildBankDetailRow('Account Type', memberBankDetails['bank_account_type'] ?? 'N/A'),
+                      _buildBankDetailRow('Account Number', memberBankDetails['bank_account_number'] ?? 'N/A'),
+                      _buildBankDetailRow('Branch Code', memberBankDetails['bank_branch_code'] ?? 'N/A', isLast: true),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'Transfer TO (Business Bank):',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                    color: Colors.black87,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.withAlpha(25),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.blue.shade200),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildBankDetailRow('Account Holder', tpBankDetails['account_holder_name'] ?? 'N/A'),
+                      _buildBankDetailRow('Bank', tpBankDetails['bank_name'] ?? 'N/A'),
+                      _buildBankDetailRow('Account Type', tpBankDetails['account_type'] ?? 'N/A'),
+                      _buildBankDetailRow('Account Number', tpBankDetails['account_number'] ?? 'N/A'),
+                      _buildBankDetailRow('Branch Code', tpBankDetails['branch_code'] ?? 'N/A', isLast: true),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withAlpha(25),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.orange.shade200),
+                  ),
+                  child: const Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(Icons.info_outline, color: Colors.orange, size: 20),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Complete the transfer using your banking app, then click "Confirm Payment".',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop();
+              },
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.green,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 12,
+                ),
+              ),
+              onPressed: () async {
+                Navigator.of(dialogContext).pop();
+                await _confirmBankTransferPayment(context, deal);
+              },
+              child: const Text('Confirm Payment'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildBankDetailRow(String label, String value, {bool isLast = false}) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: isLast ? 0 : 8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            '$label:',
+            style: const TextStyle(fontSize: 12, color: Colors.black54),
+          ),
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: Colors.black87,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _confirmBankTransferPayment(
+    BuildContext context,
+    DealAuthorization deal,
+  ) async {
+    try {
+      await _supabase.from('deal_authorizations').update({
+        'payment_completed_at': DateTime.now().toIso8601String(),
+        'completed_at': DateTime.now().toIso8601String(),
+        'status': 'completed',
+      }).eq('id', deal.id);
+
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.check_circle, color: Colors.white),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Text('Payment confirmed! Deal completed successfully.'),
+                ),
+              ],
+            ),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+    } catch (e) {
+      print('❌ Error confirming bank transfer: $e');
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to confirm payment: ${e.toString()}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _processPaystackPayment(
+    BuildContext context,
+    DealAuthorization deal,
+    String businessName,
+    String discountName,
+    User user,
+  ) async {
+    if (context.mounted) {
+      print('💳 Showing processing indicator...');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Row(
+            children: [
+              SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                ),
+              ),
+              SizedBox(width: 16),
+              Text('Initializing payment...'),
+            ],
+          ),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
+
+    print('💳 Calling Paystack service...');
+    final authorizationUrl = await _paystackService.startOneTimePayment(
+      itemName: 'Deal Payment - $discountName',
+      itemDescription: 'Payment for deal authorization at $businessName',
+      amount: deal.amount!,
+      userId: user.id,
+      userEmail: user.email!,
+    );
+
+    print('💳 Got authorization URL: $authorizationUrl');
+    print('💳 Context mounted: ${context.mounted}');
+
+    if (context.mounted) {
+      print('💳 Opening DealPaymentWebViewPage...');
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => DealPaymentWebViewPage(
+            authorizationUrl: authorizationUrl,
+            dealId: deal.id,
+          ),
+        ),
+      );
+      print('💳 DealPaymentWebViewPage closed/returned');
+    } else {
+      print('❌ ERROR: Context not mounted, cannot open payment screen!');
+    }
+  }

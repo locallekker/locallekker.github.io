@@ -1,0 +1,44 @@
+name: iOS - Build unsigned IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'lib/**'
+      - 'pubspec.yaml'
+      - 'ios/**'
+
+jobs:
+  build-ios-unsigned:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Set build name/number from pubspec and run number
+        shell: bash
+        run: |
+          BUILD_NAME=$(grep '^version:' pubspec.yaml | cut -d ' ' -f2 | cut -d+ -f1)
+          BUILD_NUMBER=${GITHUB_RUN_NUMBER}
+          echo "Using build-name=$BUILD_NAME build-number=$BUILD_NUMBER"
+          echo "BUILD_NAME=$BUILD_NAME" >> $GITHUB_ENV
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_ENV
+
+      - name: Build unsigned IPA (no codesign)
+        run: flutter build ipa --release --no-codesign --build-name $BUILD_NAME --build-number $BUILD_NUMBER
+
+      - name: Upload unsigned IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-unsigned-ipa
+          path: build/ios/ipa/*.ipa
+          if-no-files-found: error

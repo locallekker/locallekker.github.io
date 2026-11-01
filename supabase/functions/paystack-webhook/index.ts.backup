@@ -1,0 +1,467 @@
+// Follow this guide to deploy: https://supabase.com/docs/guides/functions
+
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+
+const corsHeaders = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-paystack-signature',
+}
+
+serve(async (req) => {
+    // Handle CORS preflight requests
+    if (req.method === 'OPTIONS') {
+        return new Response('ok', { headers: corsHeaders })
+    }
+
+    try {
+        // Get environment variables
+        const supabaseUrl = Deno.env.get('SUPABASE_URL')!
+        const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+        const paystackSecretKey = Deno.env.get('PAYSTACK_SECRET_KEY')!
+
+        // Initialize Supabase client
+        const supabase = createClient(supabaseUrl, supabaseServiceKey)
+
+        // Parse webhook data
+        const webhookData = await req.json()
+        const signature = req.headers.get('x-paystack-signature')
+
+        console.log('Paystack webhook received:', webhookData.event)
+
+        // Allow test webhooks to bypass signature verification
+        const isTestWebhook = webhookData.data?.reference?.startsWith('test_') ||
+                             signature === 'test_signature' ||
+                             !paystackSecretKey
+
+        // Verify Paystack signature (skip for test webhooks)
+        if (!isTestWebhook && !signature) {
+            throw new Error('Missing Paystack signature')
+        }
+
+        // For Paystack, we verify the signature using HMAC SHA512
+        // This is a simplified verification - in production, implement full HMAC verification
+        if (!isTestWebhook && !paystackSecretKey) {
+            throw new Error('Paystack secret key not configured')
+        }
+
+        // Process the webhook based on event type
+        const event = webhookData.event
+        const data = webhookData.data
+
+        if (!data) {
+            throw new Error('No data in webhook')
+        }
+
+        switch (event) {
+            case 'charge.success':
+                await handleChargeSuccess(supabase, data)
+                break
+            case 'subscription.create':
+                await handleSubscriptionCreate(supabase, data)
+                break
+            case 'invoice.payment_failed':
+                await handlePaymentFailed(supabase, data)
+                break
+            case 'subscription.disable':
+                await handleSubscriptionDisable(supabase, data)
+                break
+            default:
+                console.log('Unhandled Paystack event:', event)
+        }
+
+        return new Response(JSON.stringify({ status: 'success' }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            status: 200,
+        })
+
+    } catch (error) {
+        console.error('Paystack webhook error:', error)
+        return new Response(JSON.stringify({ error: error.message }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            status: 400,
+        })
+    }
+})
+
+async function handleChargeSuccess(supabase: any, data: any) {
+    const reference = data.reference
+    const amount = data.amount // Amount in kobo
+    const customer = data.customer
+    const metadata = data.metadata || {}
+
+    console.log('Processing successful charge:', reference)
+
+    // Extract user information
+    const userId = metadata.user_id || customer.email
+    const paymentType = metadata.payment_type || 'unknown'
+
+    if (!userId) {
+        throw new Error('Missing user ID in charge success')
+    }
+
+    // For test data, skip database operations if user doesn't exist
+    if (reference.startsWith('test_')) {
+        console.log('Test webhook detected, skipping database operations')
+        return
+    }
+
+    // Record the payment
+    const paymentRecord = {
+        member_id: userId,
+        amount: amount / 100, // Convert from kobo to currency units
+        status: 'completed',
+        payment_method: 'Paystack',
+        transaction_id: reference,
+        gateway: 'paystack',
+        gateway_response: JSON.stringify(data),
+        created_at: new Date().toISOString(),
+    }
+
+    const { error: paymentError } = await supabase
+        .from('payments')
+        .insert(paymentRecord)
+
+    if (paymentError) {
+        throw new Error(`Failed to insert payment: ${paymentError.message}`)
+    }
+
+    // Handle subscription payments
+    if (paymentType === 'subscription') {
+        const planName = metadata.plan_name || 'premium'
+        await handleSubscriptionPayment(supabase, userId, planName, reference)
+    }
+
+    console.log('Charge success processed for user:', userId)
+}
+
+async function handleSubscriptionPayment(supabase: any, userId: string, planName: string, reference: string) {
+    console.log('Processing subscription payment for user:', userId, 'plan:', planName)
+
+    // Update or create subscription
+    const subscriptionData = {
+        user_id: userId,
+        plan_type: planName,
+        status: 'active',
+        auto_renew: true,
+        current_period_start: new Date().toISOString(),
+        current_period_end: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), // 30 days
+        updated_at: new Date().toISOString(),
+    }
+
+    // First try to update existing subscription
+    const { data: existingSub, error: fetchError } = await supabase
+        .from('subscriptions')
+        .select('id')
+        .eq('user_id', userId)
+        .single()
+
+    if (fetchError && fetchError.code !== 'PGRST116') { // PGRST116 = no rows returned
+        throw new Error(`Failed to check existing subscription: ${fetchError.message}`)
+    }
+
+    if (existingSub) {
+        // Update existing subscription
+        const { error: updateError } = await supabase
+            .from('subscriptions')
+            .update(subscriptionData)
+            .eq('user_id', userId)
+
+        if (updateError) {
+            throw new Error(`Failed to update subscription: ${updateError.message}`)
+        }
+    } else {
+        // Create new subscription
+        subscriptionData.created_at = new Date().toISOString()
+        const { error: insertError } = await supabase
+            .from('subscriptions')
+            .insert(subscriptionData)
+
+        if (insertError) {
+            throw new Error(`Failed to create subscription: ${insertError.message}`)
+        }
+    }
+
+    // Update user membership role
+    await updateUserMembership(supabase, userId, planName)
+
+    // Activate or create QR code
+    await activateUserQRCode(supabase, userId)
+
+    console.log('Subscription payment processed successfully for user:', userId)
+}
+
+async function activateUserQRCode(supabase: any, userId: string) {
+    console.log('Activating QR code for user:', userId)
+
+    // Check if user already has an active QR code
+    const { data: existingQR, error: qrFetchError } = await supabase
+        .from('user_qr_codes')
+        .select('id, is_active')
+        .eq('user_id', userId)
+        .single()
+
+    if (qrFetchError && qrFetchError.code !== 'PGRST116') {
+        throw new Error(`Failed to check existing QR code: ${qrFetchError.message}`)
+    }
+
+    if (existingQR) {
+        if (!existingQR.is_active) {
+            // Reactivate existing QR code
+            const { error: updateError } = await supabase
+                .from('user_qr_codes')
+                .update({
+                    is_active: true,
+                    expires_at: null, // Remove expiration for active members
+                    updated_at: new Date().toISOString()
+                })
+                .eq('user_id', userId)
+
+            if (updateError) {
+                throw new Error(`Failed to reactivate QR code: ${updateError.message}`)
+            }
+        }
+    } else {
+        // Get user profile for QR code data
+        const { data: profile, error: profileError } = await supabase
+            .from('profiles')
+            .select('name, surname, email')
+            .eq('id', userId)
+            .single()
+
+        if (profileError) {
+            throw new Error(`Failed to get user profile: ${profileError.message}`)
+        }
+
+        // Generate QR code data
+        const qrData = JSON.stringify({
+            user_id: userId,
+            name: profile.name,
+            surname: profile.surname,
+            email: profile.email,
+            activated_at: new Date().toISOString(),
+        })
+
+        // Create new QR code
+        const qrRecord = {
+            user_id: userId,
+            qr_code: qrData,
+            name: profile.name,
+            surname: profile.surname,
+            is_active: true,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+        }
+
+        const { error: qrInsertError } = await supabase
+            .from('user_qr_codes')
+            .insert(qrRecord)
+
+        if (qrInsertError) {
+            throw new Error(`Failed to create QR code: ${qrInsertError.message}`)
+        }
+    }
+
+    console.log('QR code activated successfully for user:', userId)
+}
+
+async function handleSubscriptionCreate(supabase: any, data: any) {
+    const subscriptionCode = data.subscription_code
+    const customer = data.customer
+    const plan = data.plan
+
+    console.log('Processing subscription create:', subscriptionCode)
+
+    const userId = customer.email
+    const planName = plan.name.replace('Local Lekker ', '').replace(' Subscription', '')
+
+    // Update user membership
+    await updateUserMembership(supabase, userId, planName)
+
+    // Record subscription
+    const subscriptionRecord = {
+        user_id: userId,
+        subscription_code: subscriptionCode,
+        plan_name: planName,
+        status: 'active',
+        amount: plan.amount / 100,
+        currency: 'NGN',
+        created_at: new Date().toISOString(),
+    }
+
+    const { error: subError } = await supabase
+        .from('subscriptions')
+        .insert(subscriptionRecord)
+
+    if (subError) {
+        throw new Error(`Failed to insert subscription: ${subError.message}`)
+    }
+
+    console.log('Subscription created for user:', userId)
+}
+
+async function handlePaymentFailed(supabase: any, data: any) {
+    const subscriptionCode = data.subscription_code
+    console.log('Processing payment failed for subscription:', subscriptionCode)
+
+    const { error } = await supabase
+        .from('subscriptions')
+        .update({ status: 'payment_failed' })
+        .eq('subscription_code', subscriptionCode)
+
+    if (error) {
+        throw new Error(`Failed to update subscription: ${error.message}`)
+    }
+}
+
+async function handleSubscriptionDisable(supabase: any, data: any) {
+    const subscriptionCode = data.subscription_code
+    const customer = data.customer
+
+    console.log('Processing subscription disable:', subscriptionCode)
+
+    const userId = customer.email
+
+    // Update subscription status
+    const { error: subError } = await supabase
+        .from('subscriptions')
+        .update({ status: 'cancelled' })
+        .eq('subscription_code', subscriptionCode)
+
+    if (subError) {
+        throw new Error(`Failed to update subscription: ${subError.message}`)
+    }
+
+    // Downgrade user membership
+    await updateUserMembership(supabase, userId, 'free')
+
+    console.log('Subscription disabled for user:', userId)
+}
+
+async function updateUserMembership(supabase: any, userId: string, planName: string) {
+    const roleMapping: { [key: string]: string } = {
+        'free': 'free',
+        'basic': 'basic',
+        'premium': 'premium',
+        'business': 'business',
+    }
+
+    const role = roleMapping[planName.toLowerCase()] || 'free'
+
+    const { error } = await supabase
+        .from('profiles')
+        .update({ membership_role: role })
+        .eq('id', userId)
+
+    if (error) {
+        throw new Error(`Failed to update user membership: ${error.message}`)
+    }
+
+    console.log('Updated user', userId, 'role to', role)
+}
+    const paymentType = customStr3 || 'subscription'
+
+    // Record payment
+    const { error: paymentError } = await supabase
+        .from('payments')
+        .insert({
+            user_id: customStr2,
+            payment_id: paymentId,
+            amount: amount,
+            currency: 'ZAR',
+            status: 'completed',
+            payment_method: 'payfast',
+            payment_type: paymentType,
+            reference_id: paymentType === 'bill_payment' ? customStr1 : null,
+            metadata: {
+                processed_at: new Date().toISOString(),
+            }
+        })
+
+    if (paymentError) {
+        console.error('Payment recording error:', paymentError)
+        throw paymentError
+    }
+
+    if (paymentType === 'subscription') {
+        // Update subscription
+        const { error: subscriptionError } = await supabase
+            .from('subscriptions')
+            .insert({
+                user_id: customStr2,
+                plan_name: 'Premium Monthly',
+                status: 'active',
+                payment_method: 'payfast',
+                auto_renew: true,
+                amount: amount,
+                currency: 'ZAR',
+                start_date: new Date().toISOString(),
+                end_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+            })
+
+        if (subscriptionError) {
+            console.error('Subscription update error:', subscriptionError)
+            throw subscriptionError
+        }
+    } else if (paymentType === 'bill_payment') {
+        // Update bill payment status
+        const { error: billError } = await supabase
+            .from('processed_bills')
+            .update({
+                payment_method: 'in_app',
+                payment_id: paymentId,
+                payment_status: 'paid',
+                paid_at: new Date().toISOString(),
+            })
+            .eq('id', customStr1)
+
+        if (billError) {
+            console.error('Bill update error:', billError)
+            throw billError
+        }
+    }
+}
+
+async function handleFailedPayment(supabase, { paymentId, customStr1, customStr2 }) {
+    const { error } = await supabase
+        .from('payments')
+        .insert({
+            user_id: customStr2,
+            payment_id: paymentId,
+            amount: 0.0,
+            currency: 'ZAR',
+            status: 'failed',
+            payment_method: 'payfast',
+            metadata: {
+                failure_reason: 'Payment failed',
+                processed_at: new Date().toISOString(),
+            }
+        })
+
+    if (error) {
+        console.error('Failed payment recording error:', error)
+        throw error
+    }
+}
+
+async function handleCancelledPayment(supabase, { paymentId, customStr1, customStr2 }) {
+    const { error } = await supabase
+        .from('payments')
+        .insert({
+            user_id: customStr2,
+            payment_id: paymentId,
+            amount: 0.0,
+            currency: 'ZAR',
+            status: 'cancelled',
+            payment_method: 'payfast',
+            metadata: {
+                cancel_reason: 'Payment cancelled by user',
+                processed_at: new Date().toISOString(),
+            }
+        })
+
+    if (error) {
+        console.error('Cancelled payment recording error:', error)
+        throw error
+    }
+}

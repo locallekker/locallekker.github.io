@@ -1,0 +1,92 @@
+name: local_lekker
+description: "Local Lekker - Smart receipt scanning and local business payments. Get instant discounts and pay digitally at your favorite local businesses."
+publish_to: 'none'
+version: 1.0.16+64
+
+environment:
+  sdk: ^3.9.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+  # Supabase client for Flutter
+  supabase_flutter: ^2.12.0
+  # HTTP client for Paystack API calls and server communication
+  http: ^1.1.0
+  # HTTP parser for multipart requests
+  http_parser: ^4.0.2
+  # Launch external URLs (Paystack redirect flow)
+  url_launcher: ^6.1.10
+  # In-app webview for Paystack inline checkout
+  webview_flutter: ^4.7.0
+  webview_flutter_android: ^4.10.11
+  # Load environment variables (Supabase keys, Paystack keys)
+  flutter_dotenv: ^6.0.0
+  crypto: ^3.0.6
+  # Charts for dashboard
+  fl_chart: ^1.1.0
+  # Logging framework
+  logger: ^2.5.0
+  # Local storage for pending payments
+  shared_preferences: ^2.5.4
+  # Deep link handling for authentication
+  app_links: ^6.4.1
+  qr_flutter: ^4.1.0
+  qr: ^3.0.1
+  # QR code scanning
+  mobile_scanner: ^7.1.4
+  # Image picker for logo uploads
+  image_picker: ^1.0.4
+  # File picker for admin liquor licence documents (PDF + images)
+  file_picker: ^10.3.4
+  # Connectivity checking for offline mode
+  connectivity_plus: ^7.0.0
+  # UUID generation
+  uuid: ^4.2.1
+  llm_dart: ^0.10.5
+  intl: ^0.20.2
+  # PDF generation for receipt downloads
+  pdf: ^3.11.1
+  path_provider: ^2.1.5
+  # Local notifications for in-app alerts
+  flutter_local_notifications: ^20.0.0
+  # Firebase for push notifications when app is closed
+  firebase_core: ^3.12.1
+  firebase_messaging: ^15.2.4
+  # Emoji picker for chat messages
+  emoji_picker_flutter: ^4.4.0
+  # App version info for bottom ribbon
+  package_info_plus: ^9.0.0
+  # Geolocation for live location tracking
+  geolocator: ^14.0.2
+  # Reverse geocoding for city names
+  geocoding: ^4.0.0
+  # Screenshot blocking on sensitive screens
+  screen_protector: ^1.4.2
+  # Permission handling for camera and other runtime permissions
+  # permission_handler removed to avoid Android plugin/tooling conflicts during APK build
+  # Google Sign-In (Continue with Google) â€” feeds into existing Supabase auth session
+  google_sign_in: ^6.2.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.3
+
+  supabase: any
+flutter:
+  uses-material-design: true
+  assets:
+    - .env
+    - assets/
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/heart_flag.png"
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: "assets/heart_flag.png"

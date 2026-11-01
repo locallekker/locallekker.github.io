@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1050086866287",
+    "project_id": "local-lekker",
+    "storage_bucket": "local-lekker.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1050086866287:android:4a10471f4e30384a547c9a",
+        "android_client_info": {
+          "package_name": "com.locallekker.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBIEVVbnL-AP7N9FxeUKok0xfcy0qarrSw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

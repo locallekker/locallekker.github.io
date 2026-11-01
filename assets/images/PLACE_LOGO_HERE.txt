@@ -1,0 +1,49 @@
+# PLACE YOUR LOGO HERE
+
+📍 **File Name:** `creator_logo.png`  
+📍 **Location:** This folder (`assets/images/`)  
+📍 **Full Path:** `c:\Users\clyde\local_lekker\assets\images\creator_logo.png`
+
+## Logo Specifications
+
+### Required:
+- ✅ **Format:** PNG
+- ✅ **File Name:** `creator_logo.png` (exact name, lowercase)
+- ✅ **Size:** Recommended 120x120 pixels (or any small square/horizontal logo)
+
+### Recommended:
+- ✨ **Background:** Transparent PNG for best appearance
+- ✨ **Style:** Simple, clean design that works at small sizes
+- ✨ **Colors:** Will display as-is with opacity applied
+
+## Quick Steps
+
+1. **Get your logo ready** (PNG format, small size)
+2. **Rename it to:** `creator_logo.png`
+3. **Copy it here:** `assets/images/creator_logo.png`
+4. **Run:** `flutter clean && flutter pub get`
+5. **Restart your app** to see the watermark
+
+## What Happens Next?
+
+Once you place your logo here, it will automatically appear:
+- ✅ At the bottom of the **Welcome Page** (already added as example)
+- 📱 You can add it to other screens using the widgets in `lib/widgets/creator_watermark.dart`
+
+## Don't Have a Logo Yet?
+
+No problem! The app includes a fallback display:
+- Shows a small "Logo" text box if the image file is missing
+- Your app will still work perfectly while you prepare your logo
+
+## Need Help?
+
+Check the main README.md in this folder for:
+- Detailed usage examples
+- Customization options
+- How to add watermark to other screens
+- Different watermark styles (compact vs standard)
+
+---
+
+**Ready?** Just drop your `creator_logo.png` file in this folder! 🎨

@@ -1,0 +1,57 @@
+name: CI checks
+
+# Runs analysis and offline tests on pushes and pull requests. This workflow
+# is independent of deploy-web.yml and never blocks or alters deployments.
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.38.9
+
+      # .env is a bundled asset, so it must exist for the test build.
+      # Placeholder values only; no tests here talk to Supabase or Paystack.
+      - name: Create placeholder .env
+        run: |
+          printf 'SUPABASE_URL=https://example.supabase.co\n' > .env
+          printf 'SUPABASE_ANON_KEY=placeholder\n' >> .env
+          printf 'PAYSTACK_DEVELOPMENT_MODE=false\nPAYSTACK_SANDBOX=false\n' >> .env
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings lib test
+
+      # Offline tests only (paystack_service_test and database_state_test
+      # need live credentials and are excluded).
+      - name: Run offline tests
+        run: >
+          flutter test
+          test/safe_retry_test.dart
+          test/release_config_check_test.dart
+          test/payment_status_service_test.dart
+          test/subscription_dates_test.dart
+          test/browser_payment_option_test.dart
+          test/restaurant_deal_test.dart
+          test/partner_qr_redemption_test.dart
+          test/restaurant_deal_dialog_test.dart
+          test/admin_engagement_report_test.dart
+          test/admin_engagement_screen_test.dart
+          test/deal_image_preview_test.dart
+          test/app_flow_test.dart
+          test/widget_test.dart
