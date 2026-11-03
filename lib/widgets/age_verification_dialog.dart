@@ -8,12 +8,14 @@ const Color _wineDark = Color(0xFF722F37);
 /// 18+ self-confirmation gate for the Local Sips section.
 ///
 /// Returns true when the member has confirmed (now or previously). The result
-/// is stored on the profile, so a confirmed member is never asked again.
+/// is stored on signed-in profiles. Guests confirm for each visit without
+/// creating or updating a profile.
 Future<bool> ensureMemberIsAgeVerified(BuildContext context) async {
   final user = SupabaseService.instance.getCurrentUser();
-  if (user == null) return false;
-
-  if (await SupabaseService.instance.isMemberAgeVerified(user.id)) return true;
+  if (user != null &&
+      await SupabaseService.instance.isMemberAgeVerified(user.id)) {
+    return true;
+  }
   if (!context.mounted) return false;
 
   final confirmed = await showDialog<bool>(
@@ -39,7 +41,7 @@ class _AgeVerificationDialogState extends State<_AgeVerificationDialog> {
   Future<void> _confirm() async {
     final user = SupabaseService.instance.getCurrentUser();
     if (user == null) {
-      setState(() => _error = 'You need to be signed in to continue.');
+      Navigator.of(context).pop(true);
       return;
     }
 

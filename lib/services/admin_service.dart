@@ -68,75 +68,90 @@ class AdminService {
 
   Future<bool> _cancelPaystackSubscriptionIfExists(String memberId) async {
     try {
-      final subscription = await supabase
+      final subscriptions = await supabase
           .from('subscriptions')
-          .select('paystack_subscription_code, status')
-          .eq('user_id', memberId)
-          .maybeSingle();
-
-      final subscriptionCode =
-          subscription?['paystack_subscription_code'] as String?;
-      if (subscriptionCode == null || subscriptionCode.isEmpty) {
-        _logger.i('No Paystack subscription code for member: $memberId');
-        return false;
-      }
+          .select('paystack_subscription_code')
+          .eq('user_id', memberId);
+      final subscriptionCodes = (subscriptions as List)
+          .map((row) => row['paystack_subscription_code'] as String?)
+          .whereType<String>()
+          .map((code) => code.trim())
+          .where((code) => code.isNotEmpty)
+          .toSet();
 
       // Disable local renewal before the provider call. The scheduled worker
       // must stop immediately even while Paystack cancellation is in flight.
+      final cancellationRequestedAt = DateTime.now().toIso8601String();
       await supabase
           .from('subscriptions')
           .update({
             'auto_renew': false,
+            'cancellation_requested_at': cancellationRequestedAt,
             'renewal_in_progress_at': null,
-            'updated_at': DateTime.now().toIso8601String(),
+            'updated_at': cancellationRequestedAt,
           })
           .eq('user_id', memberId);
 
-      final paystackService = PaystackService();
-
-      String? emailToken;
-      try {
-        final subscriptionDetails = await paystackService
-            .checkSubscriptionStatus(subscriptionCode);
-        emailToken = subscriptionDetails?['email_token']?.toString();
-      } catch (e) {
-        _logger.w(
-          'Failed to fetch Paystack subscription details for $subscriptionCode: $e',
-        );
-      }
-
-      if (emailToken == null || emailToken.isEmpty) {
-        _logger.w(
-          'Missing email token for Paystack subscription $subscriptionCode; skipping cancellation',
-        );
+      if (subscriptionCodes.isEmpty) {
+        _logger.i('No Paystack subscription codes for member: $memberId');
         return false;
       }
 
-      final cancelled = await paystackService.cancelSubscription(
-        subscriptionCode,
-        emailToken,
-      );
+      final paystackService = PaystackService();
+      var allCancelled = true;
 
-      final updateData = <String, dynamic>{
-        'auto_renew': false,
-        'renewal_in_progress_at': null,
-        'updated_at': DateTime.now().toIso8601String(),
-      };
+      for (final subscriptionCode in subscriptionCodes) {
+        String? emailToken;
+        try {
+          final subscriptionDetails = await paystackService
+              .checkSubscriptionStatus(subscriptionCode);
+          emailToken = subscriptionDetails?['email_token']?.toString();
+        } catch (e) {
+          _logger.w(
+            'Failed to fetch Paystack subscription details for $subscriptionCode: $e',
+          );
+        }
 
-      if (cancelled) {
-        updateData['status'] = 'cancelled';
+        if (emailToken == null || emailToken.isEmpty) {
+          allCancelled = false;
+          _logger.w(
+            'Missing email token for Paystack subscription $subscriptionCode; cancellation remains pending',
+          );
+          continue;
+        }
+
+        final cancelled = await paystackService.cancelSubscription(
+          subscriptionCode,
+          emailToken,
+        );
+
+        final updateAt = DateTime.now().toIso8601String();
+        final updateData = <String, dynamic>{
+          'auto_renew': false,
+          'cancellation_requested_at': cancellationRequestedAt,
+          'renewal_in_progress_at': null,
+          'updated_at': updateAt,
+        };
+
+        if (cancelled) {
+          updateData['status'] = 'cancelled';
+          updateData['cancelled_at'] = updateAt;
+        } else {
+          allCancelled = false;
+        }
+
+        await supabase
+            .from('subscriptions')
+            .update(updateData)
+            .eq('user_id', memberId)
+            .eq('paystack_subscription_code', subscriptionCode);
+
+        _logger.i(
+          'Paystack subscription cancel attempt for $memberId (code: $subscriptionCode) result: $cancelled',
+        );
       }
 
-      await supabase
-          .from('subscriptions')
-          .update(updateData)
-          .eq('user_id', memberId);
-
-      _logger.i(
-        'Paystack subscription cancel attempt for $memberId (code: $subscriptionCode) result: $cancelled',
-      );
-
-      return cancelled;
+      return allCancelled;
     } catch (e) {
       _logger.w('Error cancelling Paystack subscription for $memberId: $e');
       return false;
@@ -605,7 +620,12 @@ class AdminService {
           .from('subscriptions')
           .select('paystack_subscription_code, status')
           .eq('user_id', memberId)
-          .maybeSingle();
+          .order('created_at', ascending: false);
+        final hasStoredProviderSubscription = subscriptionData.any(
+        (row) =>
+          (row['paystack_subscription_code'] as String?)?.trim().isNotEmpty ==
+          true,
+        );
 
       // Attempt to cancel Paystack subscription to stop future charges
       final cancelled = await _cancelPaystackSubscriptionIfExists(memberId);
@@ -624,15 +644,19 @@ class AdminService {
           .eq('id', memberId);
 
       // Update subscription status to deactivated
-      if (subscriptionData != null) {
+      if (subscriptionData.isNotEmpty) {
+        final deactivatedAt = DateTime.now().toIso8601String();
+        final subscriptionUpdate = <String, dynamic>{
+          'status': 'inactive',
+          'auto_renew': false,
+          'cancellation_requested_at': deactivatedAt,
+          'renewal_in_progress_at': null,
+          'updated_at': deactivatedAt,
+        };
+        if (cancelled) subscriptionUpdate['cancelled_at'] = deactivatedAt;
         await supabase
             .from('subscriptions')
-            .update({
-              // Use valid status per constraint
-              'status': 'inactive',
-              'auto_renew': false,
-              'updated_at': DateTime.now().toIso8601String(),
-            })
+            .update(subscriptionUpdate)
             .eq('user_id', memberId);
       }
 
@@ -646,8 +670,9 @@ class AdminService {
         'member_id': memberId,
         'reason': reason,
         'deactivated_at': DateTime.now().toIso8601String(),
-        'paystack_subscription_code':
-            subscriptionData?['paystack_subscription_code'],
+        'provider_subscription_cancelled': cancelled,
+        'provider_cancellation_pending':
+          hasStoredProviderSubscription && !cancelled,
       };
     } catch (e) {
       _logger.e('Failed to deactivate member: $e');

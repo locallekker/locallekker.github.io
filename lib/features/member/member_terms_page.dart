@@ -4,7 +4,12 @@ import '../../services/supabase_service.dart';
 import '../../services/navigation_service.dart';
 
 class MemberTermsPage extends StatefulWidget {
-  const MemberTermsPage({super.key});
+  /// When true the page pops with `true` on acceptance (and allows backing
+  /// out with `null`) instead of routing through the post-auth navigation.
+  /// Used when terms are collected inline right before a subscription payment.
+  final bool popOnAccept;
+
+  const MemberTermsPage({super.key, this.popOnAccept = false});
 
   @override
   State<MemberTermsPage> createState() => _MemberTermsPageState();
@@ -33,8 +38,11 @@ class _MemberTermsPageState extends State<MemberTermsPage> {
       );
       if (!mounted) return;
       if (ok) {
+        if (widget.popOnAccept) {
+          Navigator.of(context).pop(true);
+          return;
+        }
         // Use centralized navigation so we only show payment screen if subscription truly pending
-        if (!mounted) return;
         await NavigationService().navigateToHomeAfterAuth(context);
       } else {
         setState(() => _error = 'Failed to save acceptance. Try again.');
@@ -53,7 +61,7 @@ class _MemberTermsPageState extends State<MemberTermsPage> {
     return Scaffold(
       appBar: BrandedAppBar(
         title: const Text('Member Terms & Conditions'),
-        automaticallyImplyLeading: false,
+        automaticallyImplyLeading: widget.popOnAccept,
       ),
       body: SafeArea(
         child: Column(

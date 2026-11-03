@@ -27,6 +27,7 @@ interface DueSubscription {
   plan_type: string
   renewal_charge_cents: number
   current_period_end: string
+  paystack_subscription_code: string | null
   email: string
   paystack_customer_code: string | null
   authorization_code: string | null
@@ -127,20 +128,6 @@ async function renewSubscription(
 
   console.log(`Processing renewal for user=${user_id} sub=${subscription_id} amount=${chargeAmountCents}`)
 
-  // â”€â”€ Skip if no saved card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  if (!sub.authorization_code) {
-    console.warn(`No primary card for user ${user_id} â€” skipping`)
-    await logRenewalResult(supabase, {
-      user_id,
-      subscription_id,
-      status: "failed",
-      failure_reason: "No saved primary card on file",
-      amount_cents: chargeAmountCents,
-    })
-    await markSubscriptionFailed(supabase, subscription_id, user_id, "No saved primary card on file")
-    return { user_id, subscription_id, status: "skipped", reason: "no_card" }
-  }
-
   const { data: claimed, error: claimError } = await supabase.rpc(
     "claim_subscription_renewal",
     { p_subscription_id: subscription_id },
@@ -158,13 +145,15 @@ async function renewSubscription(
   // cancellation committed while this worker was fetching cannot be charged.
   const { data: currentSubscription, error: currentSubscriptionError } = await supabase
     .from("subscriptions")
-    .select("status, auto_renew, renewal_in_progress_at")
+    .select("status, auto_renew, renewal_in_progress_at, paystack_subscription_code, cancellation_requested_at, cancelled_at")
     .eq("id", subscription_id)
     .maybeSingle()
   if (
     currentSubscriptionError ||
     currentSubscription?.status !== "active" ||
     currentSubscription?.auto_renew !== true ||
+    currentSubscription?.cancellation_requested_at != null ||
+    currentSubscription?.cancelled_at != null ||
     !currentSubscription?.renewal_in_progress_at
   ) {
     await supabase.rpc("release_subscription_renewal_claim", {
@@ -174,11 +163,111 @@ async function renewSubscription(
     return { user_id, subscription_id, status: "skipped", reason: "cancelled_or_changed" }
   }
 
+  if (currentSubscription?.paystack_subscription_code) {
+    await supabase.rpc("release_subscription_renewal_claim", {
+      p_subscription_id: subscription_id,
+    })
+    console.log(
+      `Skipping ${subscription_id}: Paystack-managed recurring subscription (${currentSubscription.paystack_subscription_code})`,
+    )
+    return { user_id, subscription_id, status: "skipped", reason: "paystack_managed_recurring" }
+  }
+
+  const reference = `renewal_${subscription_id}_${new Date(sub.current_period_end).getTime()}`
+  const { data: priorDuplicate, error: priorDuplicateError } = await supabase
+    .from("subscription_renewals")
+    .select("id")
+    .eq("subscription_id", subscription_id)
+    .eq("payment_method", reference)
+    .eq("error_message", "Duplicate Transaction Reference")
+    .limit(1)
+    .maybeSingle()
+
+  if (priorDuplicateError) {
+    await supabase.rpc("release_subscription_renewal_claim", {
+      p_subscription_id: subscription_id,
+    })
+    return { user_id, subscription_id, status: "failed", reason: "reference_lookup_failed" }
+  }
+
+  if (priorDuplicate) {
+    const verification = await verifyPaystackTransaction(paystackSecretKey, reference)
+    if (verification.status === "success") {
+      await extendSubscription(supabase, sub, reference)
+      await logRenewalResult(supabase, {
+        user_id,
+        subscription_id,
+        status: "success",
+        reference,
+        amount_cents: chargeAmountCents,
+      })
+      await notifyUser(supabase, user_id, chargeAmountCents, reference)
+      return { user_id, subscription_id, status: "success", reference, amount_cents: chargeAmountCents }
+    }
+
+    if (verification.status === "failed") {
+      await logRenewalResult(supabase, {
+        user_id,
+        subscription_id,
+        status: "failed",
+        reference,
+        amount_cents: chargeAmountCents,
+        failure_reason: verification.message ?? "Paystack confirms the prior attempt failed",
+      })
+      await markSubscriptionFailed(
+        supabase,
+        subscription_id,
+        user_id,
+        verification.message ?? "Paystack confirms the prior attempt failed",
+      )
+      return { user_id, subscription_id, status: "failed", reason: "prior_attempt_failed" }
+    }
+
+    await supabase.rpc("release_subscription_renewal_claim", {
+      p_subscription_id: subscription_id,
+    })
+    return { user_id, subscription_id, status: "skipped", reason: "reference_status_unknown" }
+  }
+
+  if (!sub.authorization_code) {
+    console.warn(`No primary card for user ${user_id} - skipping`)
+    await logRenewalResult(supabase, {
+      user_id,
+      subscription_id,
+      status: "failed",
+      failure_reason: "No saved primary card on file",
+      amount_cents: chargeAmountCents,
+    })
+    await markSubscriptionFailed(supabase, subscription_id, user_id, "No saved primary card on file")
+    return { user_id, subscription_id, status: "skipped", reason: "no_card" }
+  }
+
   // â”€â”€ Charge via Paystack charge_authorization â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const chargeEmail = sub.card_email || email
   const amountKobo = chargeAmountCents // Paystack uses kobo (ZAR cents)
-  const reference = `renewal_${subscription_id}_${new Date(sub.current_period_end).getTime()}`
 
+
+  async function verifyPaystackTransaction(
+    paystackSecretKey: string,
+    reference: string,
+  ): Promise<{ status: "success" | "failed" | "unknown"; message?: string }> {
+    try {
+      const response = await fetch(
+        `https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`,
+        { headers: { Authorization: `Bearer ${paystackSecretKey}` } },
+      )
+      const result = await response.json()
+      const status = result?.data?.status
+
+      if (response.ok && status === "success") return { status: "success" }
+      if (response.ok && ["failed", "abandoned", "reversed"].includes(status)) {
+        return { status: "failed", message: result?.data?.gateway_response ?? result?.message }
+      }
+      return { status: "unknown", message: result?.message }
+    } catch (error: any) {
+      return { status: "unknown", message: error?.message }
+    }
+  }
   let paystackResponse: any
   try {
     const resp = await fetch("https://api.paystack.co/transaction/charge_authorization", {

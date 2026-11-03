@@ -9,6 +9,7 @@ import '../../models/discount.dart';
 import '../../models/restaurant_deal.dart';
 import '../../services/admin_engagement_service.dart';
 import '../../services/deal_authorization_service.dart';
+import '../../services/member_activation_service.dart';
 import '../../services/in_app_payment_availability_service.dart';
 import '../../services/supabase_service.dart';
 import '../../widgets/branded_app_bar.dart';
@@ -234,6 +235,19 @@ class _RestaurantDealRequestPageState extends State<RestaurantDealRequestPage> {
       _showMessage(quote.error!);
       return;
     }
+    if (SupabaseService.instance.getCurrentUser() == null) {
+      setState(() => _submitting = true);
+      try {
+        await MemberActivationService().ensureCanRequestDeal(
+          context,
+          savings: quote.discount,
+          dealId: widget.discount.id,
+        );
+      } finally {
+        if (mounted) setState(() => _submitting = false);
+      }
+      return;
+    }
     if (_birthdayBlocker != null) {
       _showMessage(_birthdayBlocker!);
       return;
@@ -255,6 +269,12 @@ class _RestaurantDealRequestPageState extends State<RestaurantDealRequestPage> {
 
     setState(() => _submitting = true);
     try {
+      final canRequest = await MemberActivationService().ensureCanRequestDeal(
+        context,
+        savings: quote.discount,
+      );
+      if (!canRequest) return;
+
       await DealAuthorizationService().requestDealAuthorization(
         memberId: user.id,
         discountId: widget.discount.id,
@@ -329,6 +349,14 @@ class _RestaurantDealRequestPageState extends State<RestaurantDealRequestPage> {
                 'partner confirms the total against the till receipt.\n\n'
                 'Pay the partner in store. No price or payment is needed here.',
               ),
+              if (SupabaseService.instance.getCurrentUser() == null) ...[
+                const SizedBox(height: 16),
+                FilledButton(
+                  onPressed: () => MemberActivationService()
+                      .ensureCanRequestDeal(context, dealId: widget.discount.id),
+                  child: const Text('Sign up or sign in to redeem'),
+                ),
+              ],
             ],
           ),
         ),

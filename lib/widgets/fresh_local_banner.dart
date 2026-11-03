@@ -70,7 +70,7 @@ class _FreshLocalBannerState extends State<FreshLocalBanner>
       return CategoryEntryBanner(
         onTap: widget.onTap,
         title: kFreshLocalCategory,
-        subtitle: 'Fresh produce near you',
+        subtitle: 'Produce from local growers',
         icon: Icons.eco,
         gradientColors: const [_limeLight, _limeMid, _limeDark],
         shadowColor: const Color(0xFF2E5511),

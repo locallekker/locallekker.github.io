@@ -58,7 +58,10 @@ class InAppPaymentAvailabilityService {
   }
 
   Future<void> notifyPartner(String discountId) async {
-    if (discountId.isEmpty) return;
+    if (discountId.isEmpty ||
+        SupabaseService.instance.getCurrentUser() == null) {
+      return;
+    }
     try {
       await SupabaseService.instance.client.rpc(
         'notify_tp_in_app_payment_unavailable',

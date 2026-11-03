@@ -12,6 +12,11 @@
 -- ============================================================
 
 -- ── 1. View: candidates for reconciliation ───────────────────
+ALTER TABLE public.subscriptions
+  ADD COLUMN IF NOT EXISTS cancellation_requested_at timestamptz,
+  ADD COLUMN IF NOT EXISTS cancelled_at timestamptz,
+  ADD COLUMN IF NOT EXISTS paystack_subscription_created_at timestamptz;
+
 CREATE OR REPLACE VIEW public.pending_payment_reconciliation_candidates AS
 SELECT
   p.id   AS user_id,
@@ -19,8 +24,18 @@ SELECT
   p.name,
   p.surname,
   p.paystack_customer_code,
-  p.created_at
+  p.created_at,
+  c.cancellation_cutoff_at
 FROM public.profiles p
+LEFT JOIN LATERAL (
+  SELECT MAX(CASE
+    WHEN s.cancelled_at IS NOT NULL AND s.cancellation_requested_at IS NOT NULL
+      THEN LEAST(s.cancelled_at, s.cancellation_requested_at)
+    ELSE COALESCE(s.cancelled_at, s.cancellation_requested_at)
+  END) AS cancellation_cutoff_at
+  FROM public.subscriptions s
+  WHERE s.user_id = p.id
+) c ON true
 WHERE p.role = 'member'
   AND coalesce(p.is_deactivated, false) = false
   AND coalesce(p.subscription, 'pending') <> 'active'

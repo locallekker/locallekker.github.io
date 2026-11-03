@@ -111,40 +111,37 @@ class MemberCategoryBannerRow extends StatelessWidget {
         ),
     ];
 
-    if (banners.length > 4) {
-      Widget buildBannerRow(int start, int end) => Row(
-        children: [
-          for (var i = start; i < end; i++) ...[
-            if (i > start) const SizedBox(width: 8),
-            Expanded(child: banners[i]),
-          ],
-        ],
-      );
-
-      return SizedBox(
-        height: 272,
-        child: Column(
-          children: [
-            Expanded(child: buildBannerRow(0, 3)),
-            const SizedBox(height: 8),
-            Expanded(child: buildBannerRow(3, banners.length)),
-          ],
-        ),
-      );
-    }
-
     if (banners.length == 1) return banners.first;
 
-    return SizedBox(
-      height: 132,
-      child: Row(
-        children: [
-          for (var i = 0; i < banners.length; i++) ...[
-            if (i > 0) const SizedBox(width: 8),
-            Expanded(child: banners[i]),
-          ],
-        ],
-      ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final columns = constraints.maxWidth < 620
+            ? 2
+            : (banners.length > 4 ? 3 : banners.length);
+        final rows = (banners.length + columns - 1) ~/ columns;
+
+        return SizedBox(
+          height: rows * 132.0 + (rows - 1) * 8.0,
+          child: Column(
+            children: [
+              for (var row = 0; row < rows; row++) ...[
+                if (row > 0) const SizedBox(height: 8),
+                Expanded(
+                  child: Row(
+                    children: [
+                      for (var column = 0; column < columns; column++) ...[
+                        if (column > 0) const SizedBox(width: 8),
+                        if (row * columns + column < banners.length)
+                          Expanded(child: banners[row * columns + column]),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+            ],
+          ),
+        );
+      },
     );
   }
 }

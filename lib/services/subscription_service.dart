@@ -145,6 +145,8 @@ class SubscriptionService {
             .toIso8601String(),
         'status': 'active',
         'auto_renew': true,
+        'cancellation_requested_at': null,
+        'cancelled_at': null,
         'updated_at': now.toIso8601String(),
         'renewal_charge_cents': renewalAmountCents,
       };
@@ -414,6 +416,8 @@ class SubscriptionService {
         'intro_charge_paid_at': now.toIso8601String(),
         'status': 'active',
         'auto_renew': true,
+        'cancellation_requested_at': null,
+        'cancelled_at': null,
         'updated_at': now.toIso8601String(),
       };
 
@@ -669,6 +673,31 @@ class SubscriptionService {
 
       if (expiryDate.isBefore(now)) {
         final shouldAutoRenew = subscription['auto_renew'] == true;
+        final latestSub = await _client
+            .from('subscriptions')
+            .select('paystack_subscription_code')
+            .eq('user_id', userId)
+            .order('created_at', ascending: false)
+            .limit(1)
+            .maybeSingle();
+        final paystackSubscriptionCode =
+            latestSub?['paystack_subscription_code'] as String?;
+
+        final isPaystackManagedAutoRenew =
+            paystackSubscriptionCode != null &&
+            paystackSubscriptionCode.trim().isNotEmpty;
+
+        if (shouldAutoRenew &&
+            isPaystackManagedAutoRenew &&
+            now.difference(expiryDate) < const Duration(hours: 36)) {
+          if (kDebugMode) {
+            print(
+              '⏳ Paystack-managed auto-renew detected; skipping local renewal charge during grace window',
+            );
+          }
+          return false;
+        }
+
         if (shouldAutoRenew) {
           if (kDebugMode) {
             print('🔁 Subscription expired, attempting auto-renew charge...');
@@ -806,17 +835,6 @@ class SubscriptionService {
       }
 
       final paystackService = PaystackService();
-      final primaryMethodId = await paystackService.getPrimaryPaymentMethod(
-        userId,
-      );
-
-      if (primaryMethodId == null) {
-        if (kDebugMode) {
-          print('[processSubscriptionRenewal] No primary payment method found');
-        }
-        return false;
-      }
-
       final profile = await _client
           .from('profiles')
           .select('email, name, surname, subscription_plan')
@@ -834,11 +852,46 @@ class SubscriptionService {
       final subscriptionPlan = profile['subscription_plan'] as String?;
       final currentSubscription = await _client
           .from('subscriptions')
-          .select('id, current_period_end, plan_type, renewal_charge_cents')
+          .select(
+            'id, status, auto_renew, current_period_end, plan_type, renewal_charge_cents, paystack_subscription_code',
+          )
           .eq('user_id', userId)
           .order('created_at', ascending: false)
           .limit(1)
           .maybeSingle();
+
+      if (currentSubscription?['status'] != 'active' ||
+          currentSubscription?['auto_renew'] != true) {
+        if (kDebugMode) {
+          print(
+            '[processSubscriptionRenewal] Skipping charge because subscription is inactive or auto-renew is disabled',
+          );
+        }
+        return false;
+      }
+
+      final paystackSubscriptionCode =
+          currentSubscription?['paystack_subscription_code'] as String?;
+      if (paystackSubscriptionCode != null &&
+          paystackSubscriptionCode.trim().isNotEmpty) {
+        if (kDebugMode) {
+          print(
+            '[processSubscriptionRenewal] Skipping local charge because Paystack recurring subscription is active ($paystackSubscriptionCode)',
+          );
+        }
+        return false;
+      }
+
+      final primaryMethodId = await paystackService.getPrimaryPaymentMethod(
+        userId,
+      );
+
+      if (primaryMethodId == null) {
+        if (kDebugMode) {
+          print('[processSubscriptionRenewal] No primary payment method found');
+        }
+        return false;
+      }
 
       final planType = (currentSubscription?['plan_type'] as String?) ??
           subscriptionPlan ??
@@ -866,8 +919,33 @@ class SubscriptionService {
       }
       claimedSubscriptionId = subscriptionId;
 
+      final postClaimSubscription = await _client
+          .from('subscriptions')
+          .select(
+            'status, auto_renew, renewal_in_progress_at, paystack_subscription_code, cancellation_requested_at, cancelled_at, current_period_end',
+          )
+          .eq('id', subscriptionId)
+          .maybeSingle();
+      final postClaimProviderCode =
+          postClaimSubscription?['paystack_subscription_code'] as String?;
+      if (postClaimSubscription == null ||
+          postClaimSubscription['status'] != 'active' ||
+          postClaimSubscription['auto_renew'] != true ||
+          postClaimSubscription['renewal_in_progress_at'] == null ||
+          postClaimSubscription['cancellation_requested_at'] != null ||
+          postClaimSubscription['cancelled_at'] != null ||
+          (postClaimProviderCode != null && postClaimProviderCode.isNotEmpty) ||
+          postClaimSubscription['current_period_end'] != currentPeriodEnd) {
+        await _client.rpc(
+          'release_subscription_renewal_claim',
+          params: {'p_subscription_id': subscriptionId},
+        );
+        claimedSubscriptionId = null;
+        return false;
+      }
+
       final renewalReference =
-          'renewal_${subscriptionId}_${DateTime.parse(currentPeriodEnd).millisecondsSinceEpoch}';
+          'renewal_${subscriptionId}_${DateTime.parse(postClaimSubscription['current_period_end'] as String).millisecondsSinceEpoch}';
 
       if (kDebugMode) {
         print(
@@ -894,6 +972,27 @@ class SubscriptionService {
             '[processSubscriptionRenewal] Payment successful, updating subscription',
           );
         }
+
+        Map<String, dynamic>? latestSubscription;
+        try {
+          latestSubscription = await _client
+              .from('subscriptions')
+              .select(
+                'status, auto_renew, cancellation_requested_at, cancelled_at',
+              )
+              .eq('id', subscriptionId)
+              .maybeSingle();
+        } catch (e) {
+          if (kDebugMode) {
+            print('[processSubscriptionRenewal] Post-charge state lookup failed: $e');
+          }
+        }
+        final cancellationCommitted =
+            latestSubscription == null ||
+            latestSubscription['status'] != 'active' ||
+            latestSubscription['auto_renew'] != true ||
+            latestSubscription['cancellation_requested_at'] != null ||
+            latestSubscription['cancelled_at'] != null;
 
         final now = DateTime.now();
         final nextBillingDate = oneCalendarMonthFrom(now);
@@ -943,29 +1042,16 @@ class SubscriptionService {
           'current_period_start': now.toIso8601String(),
           'current_period_end': nextBillingDate.toIso8601String(),
           'status': 'active',
-          'auto_renew': true,
+          'auto_renew': !cancellationCommitted,
           'renewal_charge_cents': renewalChargeCents,
           'renewal_in_progress_at': null,
           'updated_at': now.toIso8601String(),
         };
 
-        final existingSubList2 = await _client
+        await _client
             .from('subscriptions')
-            .select('id')
-            .eq('user_id', userId)
-            .order('created_at', ascending: false)
-            .limit(1);
-        final existingSub = existingSubList2.isNotEmpty ? existingSubList2.first : null;
-
-        if (existingSub == null) {
-          subscriptionData['created_at'] = now.toIso8601String();
-          await _client.from('subscriptions').insert(subscriptionData);
-        } else {
-          await _client
-              .from('subscriptions')
-              .update(subscriptionData)
-              .eq('id', existingSub['id']);
-        }
+            .update(subscriptionData)
+            .eq('id', subscriptionId);
 
         // Update profile subscription status
         await _client
@@ -994,6 +1080,7 @@ class SubscriptionService {
             'renewal_date': now.toIso8601String(),
             'amount': amount,
             'status': 'success',
+            'payment_method': renewalReference,
             'qr_code_updated': true,
           });
         } catch (e) {

@@ -7,6 +7,7 @@ import '../models/virtual_receipt.dart';
 import '../models/notification.dart';
 import '../models/member_receipt.dart';
 import 'package:flutter/foundation.dart';
+import 'supabase_service.dart';
 
 /// Visibility + "new deals" state for a category entry banner
 /// (Fresh & Local, Local Sips, Local Eats).
@@ -115,7 +116,9 @@ class DiscountService {
     try {
       // Fetch cities from businesses and deals in parallel
       final responses = await Future.wait([
-        _supabase.from('businesses').select('city'),
+        _supabase
+            .from(SupabaseService.instance.businessCatalogueTable)
+            .select('city'),
         _supabase
             .from('trusted_partner_discounts')
             .select('city')
@@ -169,15 +172,15 @@ class DiscountService {
             .eq('is_active', true)
             .eq('deal_category', category),
         if (flagColumn != null)
-          _supabase.from('businesses').select('owner_member_id').eq(
-            flagColumn,
-            true,
-          )
+          _supabase
+              .from(SupabaseService.instance.businessCatalogueTable)
+              .select('owner_member_id')
+              .eq(flagColumn, true)
         else
           Future.value(<Map<String, dynamic>>[]),
         if (businessCategory != null)
           _supabase
-              .from('businesses')
+              .from(SupabaseService.instance.businessCatalogueTable)
               .select('owner_member_id')
               .inFilter('category', businessCategory)
         else
@@ -203,7 +206,7 @@ class DiscountService {
       }
 
       var query = _supabase
-          .from('businesses')
+          .from(SupabaseService.instance.businessCatalogueTable)
           .select(
             'id, owner_member_id, name, category, city, address, logo_url, '
             'produce_description, alcohol_description, liquor_license_verified, '
@@ -669,19 +672,23 @@ class DiscountService {
   // ── Static cache for active deals ──
   static List<Map<String, dynamic>>? _cachedActiveDeals;
   static DateTime? _activeDealsCacheTime;
+  static bool? _activeDealsCacheIsGuest;
   static const _activeDealsCacheTtl = Duration(minutes: 3);
 
   /// Invalidate the active-deals cache (call after edits).
   static void invalidateActiveDealsCache() {
     _cachedActiveDeals = null;
     _activeDealsCacheTime = null;
+    _activeDealsCacheIsGuest = null;
   }
 
   Future<List<Map<String, dynamic>>> getAllActiveDiscountsWithTrustedPartners({
     bool forceRefresh = false,
   }) async {
+    final isGuest = SupabaseService.instance.getCurrentUser() == null;
     // Return cached data if fresh
     if (!forceRefresh &&
+        _activeDealsCacheIsGuest == isGuest &&
         _cachedActiveDeals != null &&
         _activeDealsCacheTime != null &&
         DateTime.now().difference(_activeDealsCacheTime!) <
@@ -701,7 +708,7 @@ class DiscountService {
             .eq('is_active', true)
             .order('created_at', ascending: false),
         _supabase
-            .from('businesses')
+            .from(SupabaseService.instance.businessCatalogueTable)
             .select(
               'id, owner_member_id, name, logo_url, category, city, facebook_handle, instagram_handle, website_url, business_email',
             ),
@@ -717,6 +724,7 @@ class DiscountService {
       if (discountsResponse.isEmpty) {
         _cachedActiveDeals = [];
         _activeDealsCacheTime = DateTime.now();
+        _activeDealsCacheIsGuest = isGuest;
         return [];
       }
 
@@ -757,6 +765,7 @@ class DiscountService {
       // Cache the result
       _cachedActiveDeals = result;
       _activeDealsCacheTime = DateTime.now();
+      _activeDealsCacheIsGuest = isGuest;
 
       return result;
     } catch (e) {

@@ -1,172 +1,129 @@
-# iOS Publishing Guide for Local Lekker
+# Local Lekker: download on a Mac and publish for iOS
 
-## Prerequisites
-- **macOS** with Xcode installed (14.0+ recommended)
-- **Apple Developer Program** membership ($99/year)
-- **Bundle ID**: Use the one in your Xcode project (e.g., `com.locallekker.app`)
+## Download the source backup
 
-## Option 1: Local Build with Xcode (Recommended for First Release)
+The source-only backup is on branch `backup/macos-ios-2026-11-01`:
 
-### Step 1: Configure Xcode Project
+https://github.com/locallekker/locallekker.github.io/tree/backup/macos-ios-2026-11-01
+
+On the Mac, either select that branch on GitHub and choose **Code > Download
+ZIP**, or run these commands in Terminal:
+
 ```bash
-# Open the iOS project in Xcode
+git clone --single-branch --branch backup/macos-ios-2026-11-01 \
+  https://github.com/locallekker/locallekker.github.io.git local_lekker
+cd local_lekker
+```
+
+This branch has no earlier Git history. It contains the current application,
+platform source, tests and Supabase migrations/functions, but excludes local
+credentials, database audit dumps, old snapshots and generated builds. It is
+not a backup of the live database, storage uploads or server-side secrets.
+
+## Prepare the Mac
+
+1. Install Flutter stable, full Xcode and the CocoaPods tooling required by
+   Flutter's iOS plugins. Use an Xcode/iOS SDK accepted by App Store Connect
+   at submission time. The app requires Dart 3.9 or newer.
+2. Launch Xcode once, install its requested components and accept its licence.
+3. Have an active Apple Developer Program membership and access to the app
+   in App Store Connect.
+4. Run `flutter doctor -v` and resolve the iOS toolchain issues.
+
+From the downloaded project folder:
+
+```bash
+cp .env.template .env
+# Edit .env with the approved production CLIENT configuration.
+flutter pub get
+flutter test test/guest_browsing_test.dart \
+  test/admin_guest_conversion_screen_test.dart \
+  test/subscription_renewal_guard_test.dart
+flutter analyze --no-fatal-infos --no-fatal-warnings lib test
+```
+
+The `.env` file is intentionally not on GitHub. The app bundles it as an asset,
+so it must exist before building. Obtain the required client configuration
+through a private channel. Never put a Paystack secret key, Supabase
+service-role key, private certificate or other server secret into this file
+or into the mobile app. Those belong in the backend's secret configuration.
+Rotate any previously exposed server credentials before release.
+
+## Current iOS preparation still required
+
+This backup is source code, **not a verified App Store-ready IPA**. An iOS
+build cannot be validated on the Windows development machine.
+
+Before building on the Mac:
+
+- The Xcode project currently uses the placeholder bundle identifier
+  `com.example.localLekker`. Choose the registered production identifier in
+  **Runner > Signing & Capabilities**, matching App Store Connect. Select your
+  Apple Developer team and configure signing.
+- Xcode references `ios/Runner/Base.lproj/Main.storyboard` and
+  `LaunchScreen.storyboard`, but the tracked files end in `.storyboard.xml`.
+  Restore the names expected by the project before building:
+
+  ```bash
+  mv ios/Runner/Base.lproj/Main.storyboard.xml \
+    ios/Runner/Base.lproj/Main.storyboard
+  mv ios/Runner/Base.lproj/LaunchScreen.storyboard.xml \
+    ios/Runner/Base.lproj/LaunchScreen.storyboard
+  ```
+
+- No CocoaPods `ios/Podfile` is included in this snapshot. Resolve the plugin
+  integration using the installed Flutter version's supported iOS setup.
+  If regenerating platform files with `flutter create --platforms=ios .`,
+  first keep a copy of the downloaded project, then review every generated
+  change and preserve the existing app icons, URL schemes and privacy text.
+  Run `flutter pub get` afterwards and, if a Podfile is present, run
+  `cd ios && pod install && cd ..`.
+- The existing deployment target is iOS 13.0. Check the installed plugins'
+  minimum requirements and align the target and Podfile if necessary.
+- Check permissions for every enabled feature, including location. Camera
+  and photo-library usage descriptions are present; location descriptions
+  are not currently present.
+- Verify sign-in/deep links, member and partner flows, payments and
+  subscription renewal on an iPhone. Push notification initialization is
+  currently disabled; do not advertise background push as working.
+- Apply the required backend migrations through the normal deployment
+  process. Do not run database test fixtures against production.
+
+Open the workspace after preparing dependencies:
+
+```bash
 open ios/Runner.xcworkspace
 ```
 
-In Xcode:
-1. Select **Runner** target → **Signing & Capabilities**
-2. **Team**: Select your Apple Developer account
-3. **Bundle Identifier**: Ensure it matches your App Store listing (e.g., `com.locallekker.app`)
-4. **Signing Certificate**: Xcode auto-manages or use manual provisioning profiles
+## Build, upload and submit
 
-### Step 2: Create App Store Connect Listing
-1. Go to [App Store Connect](https://appstoreconnect.apple.com/)
-2. Click **My Apps** → **+ (New App)**
-3. Fill in:
-   - **Platform**: iOS
-   - **Name**: Local Lekker
-   - **Primary Language**: English
-   - **Bundle ID**: Select the one registered in your Apple Developer account
-   - **SKU**: `local-lekker` (any unique identifier)
-4. Complete metadata: Description, screenshots (required sizes: 6.5", 5.5"), keywords, category
-5. Upload app icon (1024x1024 PNG without transparency)
+1. In App Store Connect, create or select **Local Lekker**, using the same
+   registered bundle identifier as Xcode.
+2. Confirm the app version in `pubspec.yaml` (currently `1.0.16+64`). Use a
+   new build number if that number has already been uploaded.
+3. Build a signed archive/IPA:
 
-### Step 3: Build & Upload IPA
-```bash
-# From project root
-flutter build ipa --release
-```
+   ```bash
+   flutter build ipa --release
+   # For a later upload, use an unused number:
+   # flutter build ipa --release --build-number=65
+   ```
 
-After build completes:
-1. Open **Xcode** → **Window** → **Organizer**
-2. Select the archive that just built
-3. Click **Distribute App** → **App Store Connect** → **Upload**
-4. Follow prompts (re-signing, include symbols, upload)
+4. The signed IPA is exported into `build/ios/ipa/`. Open the archive in
+   `build/ios/archive/Runner.xcarchive` with Xcode, then use **Organizer >
+   Distribute App > App Store Connect > Upload**. Alternatively upload the
+   exported IPA with Apple's Transporter app.
+5. Wait for processing, test the build through TestFlight, and complete the
+   App Store metadata, required screenshots, privacy disclosures, age rating,
+   export-compliance questions and review notes. Verify that payment and
+   account flows satisfy Apple's applicable review requirements.
+6. Select the processed build and submit it for review. Uploading a build
+   does not automatically publish the app.
 
-### Step 4: Submit for Review
-1. Return to App Store Connect
-2. Select your app version → **TestFlight** (builds appear here after processing, ~5-30 min)
-3. Once build is processed, go to **App Store** tab
-4. Select the build for this version
-5. Complete all required sections (pricing, availability, age rating, review notes)
-6. **Submit for Review**
+## Existing GitHub Actions workflow
 
----
-
-## Option 2: CI/CD with GitHub Actions
-
-We've created `.github/workflows/ios_unsigned.yml` that builds an unsigned IPA on macOS runners. To sign and upload automatically:
-
-### Enable GitHub Actions Secrets
-Add to your repository secrets:
-- `APP_STORE_CONNECT_API_KEY_ID`
-- `APP_STORE_CONNECT_API_KEY_ISSUER_ID`
-- `APP_STORE_CONNECT_API_KEY_CONTENT` (base64-encoded .p8 key)
-- `IOS_CERTIFICATE_P12` (base64 of your distribution certificate)
-- `IOS_CERTIFICATE_PASSWORD`
-- `IOS_PROVISIONING_PROFILE` (base64 of .mobileprovision)
-
-### Update workflow to sign and upload
-Replace `.github/workflows/ios_unsigned.yml` with a signed version that:
-1. Installs certificates and profiles from secrets
-2. Runs `flutter build ipa --release` (without `--no-codesign`)
-3. Uploads to TestFlight via `altool` or Fastlane
-
----
-
-## Option 3: Codemagic (Cloud macOS builds, no local Xcode needed)
-
-Create `codemagic.yaml`:
-```yaml
-workflows:
-  ios-release:
-    name: iOS Release
-    instance_type: mac_mini_m2
-    max_build_duration: 60
-    environment:
-      flutter: stable
-      xcode: latest
-      groups:
-        - app_store_credentials
-    scripts:
-      - name: Get dependencies
-        script: flutter pub get
-      - name: Build iOS
-        script: |
-          flutter build ipa --release \
-            --build-name=1.0.0 \
-            --build-number=$BUILD_NUMBER \
-            --export-options-plist=ios/ExportOptions.plist
-    artifacts:
-      - build/ios/ipa/*.ipa
-    publishing:
-      app_store_connect:
-        api_key: $APP_STORE_CONNECT_PRIVATE_KEY
-        key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
-        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
-```
-
-Sign up at [codemagic.io](https://codemagic.io), link your repo, add App Store Connect API key in environment variables.
-
----
-
-## Troubleshooting
-
-### Missing Permissions (Camera, Photo Library)
-✅ Already added to `ios/Runner/Info.plist`:
-- `NSCameraUsageDescription`
-- `NSPhotoLibraryUsageDescription`
-- `NSPhotoLibraryAddUsageDescription`
-
-### Icon Not Displaying
-Ensure you have all required app icon sizes in `ios/Runner/Assets.xcassets/AppIcon.appiconset/`:
-- 20pt, 29pt, 40pt, 60pt, 76pt, 83.5pt (various @1x, @2x, @3x)
-- Use [appicon.co](https://appicon.co) to generate all sizes from a single 1024x1024 PNG
-
-### Build Fails: Signing Issues
-- Verify bundle ID in Xcode matches App Store Connect
-- Ensure provisioning profile includes your test device UUIDs (for development)
-- For distribution: Use App Store provisioning profile (not Ad Hoc or Development)
-
-### TestFlight Build Processing Stuck
-- Usually takes 5-30 minutes
-- Check email for any compliance issues (export restrictions, encryption declarations)
-- If > 1 hour, contact Apple Developer Support
-
----
-
-## Quick Commands Reference
-
-```bash
-# Build unsigned IPA locally (requires manual Xcode signing after)
-flutter build ipa --release --no-codesign
-
-# Build and sign via Xcode (auto-uploads if configured)
-flutter build ipa --release
-
-# Check iOS build settings
-flutter doctor -v
-
-# Clean iOS build cache
-cd ios && rm -rf Pods Podfile.lock && pod install --repo-update && cd ..
-flutter clean
-flutter pub get
-```
-
----
-
-## Next Steps After First Approval
-1. **TestFlight**: Internal testing (up to 100 users, no review needed)
-2. **External Testing**: Submit build for TestFlight review (faster than App Store)
-3. **App Store Release**: After QA, promote build to production
-4. **Updates**: Increment `version` in `pubspec.yaml` (e.g., `1.0.1+2`), rebuild, upload
-
----
-
-**Current Status:**
-- ✅ iOS project structure verified
-- ✅ Privacy descriptions added to Info.plist
-- ✅ GitHub Actions workflow created (unsigned build)
-- ⚠️ Manual signing and upload required (or configure CI secrets)
-
-For first-time publishing, **Option 1 (Xcode)** is recommended to familiarize yourself with the flow. Once comfortable, automate with GitHub Actions or Codemagic.
+The existing unsigned iOS workflow is not a publishing pipeline. It does
+not provide signing credentials or the required `.env` asset, and expects an
+IPA from `flutter build ipa --no-codesign`. That command produces an unsigned
+archive without a signed IPA export. Do not rely on this workflow for an
+App Store download or submission; use the Mac signing process above.

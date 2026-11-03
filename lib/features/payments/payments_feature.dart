@@ -12,18 +12,26 @@ import 'package:local_lekker/services/promotion_campaign_service.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'dart:async';
 import 'package:local_lekker/features/payments/paystack_webview_page.dart';
-import 'package:local_lekker/features/member/member_terms_page.dart';
 import 'package:flutter/foundation.dart';
 import 'package:local_lekker/features/auth/widgets/trusted_partner_key_dialog.dart';
 import 'package:local_lekker/services/web_checkout.dart';
-// Removed direct MembersHomePage import to enforce centralized gating
+import 'package:local_lekker/services/member_activation_service.dart';
+import 'package:local_lekker/features/auth/members_home_page.dart';
 
 class PaymentRequiredScreen extends StatefulWidget {
   final bool isReactivation;
 
+  /// Lets the member skip payment and keep browsing (browse-free model).
+  final bool allowSkip;
+
+  /// Rand saving of the deal the member tried to request, if any.
+  final double? potentialSavings;
+
   const PaymentRequiredScreen({
     super.key,
     this.isReactivation = false,
+    this.allowSkip = false,
+    this.potentialSavings,
   });
 
   @override
@@ -145,7 +153,11 @@ class _PaymentRequiredScreenState extends State<PaymentRequiredScreen> {
     }
   }
 
-  void _openStandardPaymentOption() {
+  Future<void> _openStandardPaymentOption() async {
+    // Terms are applied at the moment the member opts to pay.
+    if (!await MemberActivationService().ensureTermsAccepted(context)) return;
+    if (!mounted) return;
+
     const selectedPlan = 'subscription';
     const planDetails = {
       'name': 'Subscription',
@@ -199,7 +211,8 @@ class _PaymentRequiredScreenState extends State<PaymentRequiredScreen> {
   }
 
   Future<void> _checkTermsAcceptance() async {
-    // Ensure terms are accepted before showing payment options
+    // Terms are no longer forced on entry; they are collected when the member
+    // taps a payment option (see MemberActivationService.ensureTermsAccepted).
     final user = SupabaseService.instance.getCurrentUser();
     if (user == null) {
       if (mounted) {
@@ -212,18 +225,18 @@ class _PaymentRequiredScreenState extends State<PaymentRequiredScreen> {
       }
       return;
     }
+  }
 
-    final memberAccepted = await SupabaseService.instance
-        .hasMemberAcceptedTerms(user.id);
-
-    if (!memberAccepted && mounted) {
-      // Terms not accepted - redirect to member terms page for acceptance
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const MemberTermsPage()),
-      );
+  void _skipForNow() {
+    final navigator = Navigator.of(context);
+    if (navigator.canPop()) {
+      navigator.pop();
       return;
     }
+    navigator.pushAndRemoveUntil(
+      MaterialPageRoute(builder: (context) => const MembersHomePage()),
+      (route) => false,
+    );
   }
 
   @override
@@ -255,15 +268,41 @@ class _PaymentRequiredScreenState extends State<PaymentRequiredScreen> {
     }
     return Scaffold(
       appBar: BrandedAppBar(
-        title: const Text('Complete Your Subscription'),
-        automaticallyImplyLeading: false, // Prevent back button
+        title: Text(
+          widget.allowSkip ? 'Activate Membership' : 'Complete Your Subscription',
+        ),
+        automaticallyImplyLeading: widget.allowSkip, // Prevent back button unless skippable
       ),
       body: Center(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(24.0),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
+              if (widget.potentialSavings != null &&
+                  widget.potentialSavings! > 0) ...[
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade50,
+                    border: Border.all(color: Colors.green.shade300),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    'Activate now and save '
+                    '${MemberActivationService.formatSavings(widget.potentialSavings!)} '
+                    'on the deal you selected.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.green.shade900,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+              ],
               if (_isPaymentFailed) ...[
                 Container(
                   width: double.infinity,
@@ -332,7 +371,9 @@ class _PaymentRequiredScreenState extends State<PaymentRequiredScreen> {
               Text(
                 widget.isReactivation
                     ? 'Welcome back! To reactivate your membership, please accept the terms and complete your subscription payment.'
-                    : 'To access all features and start using the app, please complete your subscription payment.',
+                    : widget.allowSkip
+                        ? 'Activate your membership to request deals and start saving at our Trusted Partners. You can also skip for now and browse all deals.'
+                        : 'To access all features and start using the app, please complete your subscription payment.',
                 style: const TextStyle(fontSize: 16),
                 textAlign: TextAlign.center,
               ),
@@ -402,6 +443,11 @@ class _PaymentRequiredScreenState extends State<PaymentRequiredScreen> {
                 ),
               ],
               const SizedBox(height: 16),
+              if (widget.allowSkip)
+                TextButton(
+                  onPressed: _skipForNow,
+                  child: const Text('Skip for now – browse deals'),
+                ),
               TextButton(
                 onPressed: () async {
                   // Sign out user
@@ -456,7 +502,13 @@ class _PaymentRequiredScreenState extends State<PaymentRequiredScreen> {
           SizedBox(
             width: double.infinity,
             child: ElevatedButton.icon(
-              onPressed: () {
+              onPressed: () async {
+                if (!await MemberActivationService().ensureTermsAccepted(
+                  context,
+                )) {
+                  return;
+                }
+                if (!mounted) return;
                 final userId = SupabaseService.instance.getCurrentUser()?.id;
                 // Use push (not pushReplacement) so the member can return
                 // to the plan selection via the AppBar back arrow.
@@ -560,16 +612,21 @@ class _PaymentOptionsScreenState extends State<PaymentOptionsScreen> {
         .hasMemberAcceptedTerms(user.id);
 
     if (!memberAccepted && mounted) {
-      // Terms not accepted - redirect back to terms page
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'You must accept the Terms & Conditions before making a payment.',
-          ),
-          backgroundColor: Colors.red,
-        ),
+      // Collect terms inline; leave the payment screen if the member declines.
+      final accepted = await MemberActivationService().ensureTermsAccepted(
+        context,
       );
-      await NavigationService().navigateToHomeAfterAuth(context);
+      if (!accepted && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'You must accept the Terms & Conditions before making a payment.',
+            ),
+            backgroundColor: Colors.red,
+          ),
+        );
+        Navigator.of(context).maybePop();
+      }
     }
   }
 

@@ -14,11 +14,13 @@ import 'package:flutter/foundation.dart';
 class WelcomePage extends StatefulWidget {
   final bool openSignInOnLoad;
   final String? prefillEmail;
+  final double? potentialSavings;
 
   const WelcomePage({
     super.key,
     this.openSignInOnLoad = false,
     this.prefillEmail,
+    this.potentialSavings,
   });
 
   @override
@@ -211,86 +213,115 @@ class _WelcomePageState extends State<WelcomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: BrandedAppBar(title: const Text('Welcome to Local Lekker')),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(
-              "Don't have an account?",
-              style: TextStyle(fontSize: 14, color: Colors.grey[600]),
-            ),
-            const SizedBox(height: 8),
-            ElevatedButton(
-              onPressed: () => _showSignupDialog(context),
-              child: const Text('Sign Up'),
-            ),
-            const SizedBox(height: 24),
-            Text(
-              'Already have an account?',
-              style: TextStyle(fontSize: 14, color: Colors.grey[600]),
-            ),
-            const SizedBox(height: 8),
-            ElevatedButton(
-              onPressed: () => _showSigninDialog(context),
-              child: const Text('Sign In'),
-            ),
-            const SizedBox(height: 10),
-            TextButton(
-              onPressed: () => _showOtpSigninDialog(context),
-              child: const Text('Sign In with OTP'),
-            ),
-            const SizedBox(height: 16),
-            OutlinedButton.icon(
-              onPressed: () => _handleGoogleSignIn(context),
-              icon: const Icon(Icons.g_mobiledata, size: 28),
-              label: const Text('Continue with Google'),
-            ),
-            const SizedBox(height: 20),
-            // Show sign out button if user is already signed in
-            Builder(
-              builder: (context) {
-                final currentUser = SupabaseService.instance.getCurrentUser();
-                if (currentUser != null) {
-                  return Column(
-                    children: [
-                      Text(
-                        'Signed in as: ${currentUser.email}',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey,
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              if (widget.potentialSavings != null) ...[
+                const Icon(
+                  Icons.savings_outlined,
+                  size: 56,
+                  color: Color(0xFF3C8C44),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'You could save R${widget.potentialSavings!.toStringAsFixed(2)} on this deal',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF3C8C44),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'Sign up or sign in to request this deal. '
+                  'An active membership is required to redeem member savings.',
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 24),
+              ],
+              Text(
+                "Don't have an account?",
+                style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+              ),
+              const SizedBox(height: 8),
+              ElevatedButton(
+                onPressed: () => _showSignupDialog(context),
+                child: const Text('Sign Up'),
+              ),
+              const SizedBox(height: 24),
+              Text(
+                'Already have an account?',
+                style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+              ),
+              const SizedBox(height: 8),
+              ElevatedButton(
+                onPressed: () => _showSigninDialog(context),
+                child: const Text('Sign In'),
+              ),
+              const SizedBox(height: 10),
+              TextButton(
+                onPressed: () => _showOtpSigninDialog(context),
+                child: const Text('Sign In with OTP'),
+              ),
+              const SizedBox(height: 16),
+              OutlinedButton.icon(
+                onPressed: () => _handleGoogleSignIn(context),
+                icon: const Icon(Icons.g_mobiledata, size: 28),
+                label: const Text('Continue with Google'),
+              ),
+              const SizedBox(height: 20),
+              // Show sign out button if user is already signed in
+              Builder(
+                builder: (context) {
+                  final currentUser = SupabaseService.instance.getCurrentUser();
+                  if (currentUser != null) {
+                    return Column(
+                      children: [
+                        Text(
+                          'Signed in as: ${currentUser.email}',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey,
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 10),
-                      TextButton(
-                        onPressed: () async {
-                          try {
-                            await SupabaseService.instance.signOut();
-                            if (mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('Signed out successfully'),
-                                ),
-                              );
-                              // Refresh the UI
-                              setState(() {});
+                        const SizedBox(height: 10),
+                        TextButton(
+                          onPressed: () async {
+                            try {
+                              await SupabaseService.instance.signOut();
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Signed out successfully'),
+                                  ),
+                                );
+                                // Refresh the UI
+                                setState(() {});
+                              }
+                            } catch (e) {
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('Sign out failed: $e'),
+                                  ),
+                                );
+                              }
                             }
-                          } catch (e) {
-                            if (mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text('Sign out failed: $e')),
-                              );
-                            }
-                          }
-                        },
-                        child: const Text('Sign Out'),
-                      ),
-                    ],
-                  );
-                }
-                return const SizedBox.shrink();
-              },
-            ),
-          ],
+                          },
+                          child: const Text('Sign Out'),
+                        ),
+                      ],
+                    );
+                  }
+                  return const SizedBox.shrink();
+                },
+              ),
+            ],
+          ),
         ),
       ),
     );

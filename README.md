@@ -2,6 +2,63 @@
 
 A new Flutter project.
 
+## Mac download and iOS publishing
+
+Use the [iOS publishing guide](IOS_PUBLISHING_GUIDE.md) to download the clean
+source backup on a Mac, restore private client configuration, prepare Xcode
+and create a signed App Store build. The GitHub backup is source code, not a
+signed IPA or a backup of the live Supabase database.
+
+## Guest browsing and deal savings
+
+New users open on the member dashboard, not the sign-in screen. The guest
+sign-up/sign-in banner can be dismissed for that dashboard visit. Guests can
+browse deals and partners, filter by area, and use the existing quantity, item
+price and restaurant/bill calculators without an account.
+
+Requesting a deal opens the existing sign-up/sign-in screen with the calculated
+potential savings. Returning without signing in preserves the calculator inputs
+and sends no authorization or payment. After authentication, existing profile,
+terms and subscription requirements still apply; browsing does not activate a
+membership. Receipts, profile editing and chat require sign-in. Local Sips still
+requires an 18+ confirmation; guest confirmations are not written to profiles.
+Checkout-priced BOGO savings can only be calculated by the partner at the till,
+so those deals show a sign-in action without inventing a savings amount.
+
+Apply [the guest catalogue migration](supabase/migrations/20261101090000_add_guest_business_catalogue.sql)
+before releasing this app change. It exposes a read-only, allowlisted business
+projection for partners with active deals, not private owner profiles or bank
+accounts. Existing authenticated business policies and request/payment guards
+are unchanged. Guest discounts are restricted to active offers and keep the
+supporting-app capability restriction for restaurant deals.
+
+Run `flutter test test/guest_browsing_test.dart` for guest UI and request-gate
+regressions. Run [the database regression script](supabase/tests/guest_browsing.sql)
+using `supabase test db` against a disposable database with migrations applied,
+never against production.
+
+### Guest conversion tracking
+
+Admins can open **Admin > Overview > Guest browsing & conversion** to see, for
+the last 7, 30 or 90 days:
+
+- browsing guests (devices that opened the app without signing in);
+- guests who tried to request a deal, and total request attempts;
+- which deals and partners guests tried to request, with the savings shown;
+- how many requesting guests converted, split into new signups and existing
+  members signing in.
+
+Each device gets a random guest id stored locally; no personal data is
+collected while browsing. The id is linked to the account on sign-in or sign-up
+and then replaced, so later signed-out browsing is tracked separately. Repeat
+taps within 30 seconds are ignored and each device is capped at 30 attempts per
+hour. A signup that completes on a different device (for example, an email
+confirmation link) is not attributed.
+
+Apply [the guest tracking migration](supabase/migrations/20261102090000_add_guest_conversion_tracking.sql)
+for this report. Its regression script is
+[guest_conversion_tracking.sql](supabase/tests/guest_conversion_tracking.sql).
+
 ## Deal image previews
 
 In member deal browsing, tap a deal image to expand it. Tap the enlarged image

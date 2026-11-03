@@ -230,11 +230,27 @@ class _CategoryEntryBannerState extends State<CategoryEntryBanner>
           Text(
             widget.title,
             textAlign: TextAlign.center,
-            maxLines: 2,
+            maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: _titleStyle(13),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 2),
+          Text(
+            widget.subtitle,
+            textAlign: TextAlign.center,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 10,
+              height: 1.1,
+              fontWeight: FontWeight.w600,
+              color: Colors.white.withValues(alpha: 0.94),
+              shadows: const [
+                Shadow(color: Color(0x55000000), blurRadius: 3),
+              ],
+            ),
+          ),
+          const SizedBox(height: 3),
           Text(
             _compactCountsLabel(),
             textAlign: TextAlign.center,
@@ -303,12 +319,11 @@ class _CategoryEntryBannerState extends State<CategoryEntryBanner>
   );
 
   String _compactCountsLabel() {
-    if (widget.partnerCount == 0) return widget.subtitle;
     final partners = '${widget.partnerCount} partner'
         '${widget.partnerCount == 1 ? '' : 's'}';
-    if (widget.dealCount == 0) return partners;
-    return '$partners · ${widget.dealCount} deal'
+    final deals = '${widget.dealCount} deal'
         '${widget.dealCount == 1 ? '' : 's'}';
+    return '$partners · $deals';
   }
 
   Widget _buildCountsRow() {

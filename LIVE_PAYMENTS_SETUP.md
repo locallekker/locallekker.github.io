@@ -1,5 +1,14 @@
 # Live Paystack Payment Configuration Guide
 
+## Automatic renewal ownership
+
+Subscriptions with a non-empty `paystack_subscription_code` are billed by
+Paystack. The app and scheduled renewal worker must not also charge their saved
+card. Subscriptions without that code continue using the shared local renewal
+claim. Deploy the renewal-view migration, the scheduled renewal worker, and the
+app guards together. Android members need the updated Play Store app; publishing
+the web app does not update installed Android versions.
+
 ## Google Pay through hosted Paystack checkout
 
 Paystack currently supports Google Pay for **web merchants**, including Android

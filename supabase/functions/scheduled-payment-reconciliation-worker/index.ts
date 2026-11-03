@@ -35,6 +35,7 @@ interface Candidate {
   name: string | null
   surname: string | null
   paystack_customer_code: string
+  cancellation_cutoff_at: string | null
 }
 
 type ActionResult =
@@ -45,15 +46,6 @@ type ActionResult =
   | { user_id: string; email: string; action: "error"; detail: string }
 
 // ── Date helpers (mirror SubscriptionService / paystack-webhook) ──────
-function oneCalendarMonthFrom(from: Date): Date {
-  const year = from.getFullYear()
-  const month = from.getMonth()
-  const day = from.getDate()
-  const maxDay = new Date(year, month + 2, 0).getDate()
-  const clampedDay = day > maxDay ? maxDay : day
-  return new Date(year, month + 1, clampedDay, from.getHours(), from.getMinutes(), from.getSeconds())
-}
-
 function addMonths(from: Date, months: number): Date {
   return new Date(from.getFullYear(), from.getMonth() + months, from.getDate(), from.getHours(), from.getMinutes(), from.getSeconds())
 }
@@ -147,7 +139,15 @@ async function reconcileCandidate(supabase: any, paystackSecretKey: string, cand
     return { user_id: userId, email, action: "error", detail: body?.message ?? `Paystack list-transactions failed (${resp.status})` }
   }
 
-  const successfulTx = body.data.find((tx: any) => tx.status === "success")
+  const cancellationCutoff = candidate.cancellation_cutoff_at
+    ? new Date(candidate.cancellation_cutoff_at).getTime()
+    : null
+  const successfulTx = body.data.find((tx: any) => {
+    if (tx.status !== "success") return false
+    if (cancellationCutoff === null) return true
+    const occurredAt = tx.paid_at ?? tx.created_at
+    return occurredAt != null && new Date(occurredAt).getTime() > cancellationCutoff
+  })
   if (!successfulTx) {
     return { user_id: userId, email, action: "no_payment_found" }
   }
@@ -158,19 +158,49 @@ async function reconcileCandidate(supabase: any, paystackSecretKey: string, cand
   const paymentType = metadata.payment_type
 
   if (paymentType === "subscription") {
-    await activateStandardSubscription(supabase, userId, reference, metadata)
+    const applied = await activateStandardSubscription(
+      supabase,
+      userId,
+      reference,
+      amount,
+      metadata,
+      successfulTx.paid_at ?? successfulTx.created_at ?? null,
+    )
+    if (!applied) {
+      return { user_id: userId, email, action: "flagged_review", detail: `Payment ${reference} was already processed or predates cancellation` }
+    }
     return { user_id: userId, email, action: "activated_subscription", reference }
   }
 
   if (paymentType === "promotion_intro" && metadata.promotion_id && metadata.participant_id) {
-    await activateIntroSubscription(supabase, userId, reference, amount, metadata)
+    const applied = await activateIntroSubscription(
+      supabase,
+      userId,
+      reference,
+      amount,
+      metadata,
+      successfulTx.paid_at ?? successfulTx.created_at ?? null,
+    )
+    if (!applied) {
+      return { user_id: userId, email, action: "flagged_review", detail: `Payment ${reference} was already processed or predates cancellation` }
+    }
     return { user_id: userId, email, action: "activated_intro", reference }
   }
 
   // Legacy/no-metadata standard R99 charge — only auto-activate the plain
   // subscription path; never guess at an intro-campaign promo linkage.
   if (!paymentType && amount === 9900) {
-    await activateStandardSubscription(supabase, userId, reference, {})
+    const applied = await activateStandardSubscription(
+      supabase,
+      userId,
+      reference,
+      amount,
+      {},
+      successfulTx.paid_at ?? successfulTx.created_at ?? null,
+    )
+    if (!applied) {
+      return { user_id: userId, email, action: "flagged_review", detail: `Payment ${reference} was already processed or predates cancellation` }
+    }
     return { user_id: userId, email, action: "activated_subscription", reference }
   }
 
@@ -183,52 +213,29 @@ async function reconcileCandidate(supabase: any, paystackSecretKey: string, cand
 }
 
 // ── Mirrors paystack-webhook recoverSubscriptionPayment ────────────────
-async function activateStandardSubscription(supabase: any, userId: string, reference: string, metadata: any) {
-  const { data: existingSub } = await supabase
-    .from("subscriptions")
-    .select("id, status, current_period_end")
-    .eq("user_id", userId)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
-
-  if (existingSub?.status === "active") return // already handled elsewhere
+async function activateStandardSubscription(
+  supabase: any,
+  userId: string,
+  reference: string,
+  amount: number,
+  metadata: any,
+  occurredAt: string | null,
+): Promise<boolean> {
+  const renewalChargeCents = Number(metadata.renewal_charge_cents ?? 9900)
+  const { data: payment, error } = await supabase.rpc("apply_paystack_subscription_payment_checked", {
+    p_reference: reference,
+    p_event_type: "charge.success",
+    p_user_id: userId,
+    p_amount_cents: amount,
+    p_occurred_at: occurredAt,
+    p_plan_type: "subscription",
+    p_renewal_charge_cents: renewalChargeCents,
+  })
+  if (error) throw error
+  if (!payment?.applied) return false
 
   const now = new Date()
-  let baseDate = now
-  if (existingSub?.current_period_end) {
-    const existing = new Date(existingSub.current_period_end)
-    if (existing > now) baseDate = existing
-  }
-  const newExpiry = oneCalendarMonthFrom(baseDate)
-  const renewalChargeCents = Number(metadata.renewal_charge_cents ?? 9900)
-
-  if (existingSub) {
-    await supabase
-      .from("subscriptions")
-      .update({
-        status: "active",
-        plan_type: "subscription",
-        current_period_start: now.toISOString(),
-        current_period_end: newExpiry.toISOString(),
-        auto_renew: true,
-        renewal_charge_cents: renewalChargeCents,
-        updated_at: now.toISOString(),
-      })
-      .eq("id", existingSub.id)
-  } else {
-    await supabase.from("subscriptions").insert({
-      user_id: userId,
-      status: "active",
-      plan_type: "subscription",
-      current_period_start: now.toISOString(),
-      current_period_end: newExpiry.toISOString(),
-      auto_renew: true,
-      renewal_charge_cents: renewalChargeCents,
-      created_at: now.toISOString(),
-      updated_at: now.toISOString(),
-    })
-  }
+  const newExpiry = new Date(payment.current_period_end)
 
   await supabase
     .from("profiles")
@@ -245,22 +252,35 @@ async function activateStandardSubscription(supabase: any, userId: string, refer
     is_read: false,
     data: { reference, expires_at: newExpiry.toISOString(), source: "scheduled_reconciliation" },
   })
+  return true
 }
 
 // ── Mirrors paystack-webhook recoverIntroCampaignPayment ───────────────
-async function activateIntroSubscription(supabase: any, userId: string, reference: string, amount: number, metadata: any) {
+async function activateIntroSubscription(
+  supabase: any,
+  userId: string,
+  reference: string,
+  amount: number,
+  metadata: any,
+  occurredAt: string | null,
+): Promise<boolean> {
   const promotionId = metadata.promotion_id
   const participantId = metadata.participant_id
 
   const { data: existingSub } = await supabase
     .from("subscriptions")
-    .select("id, status")
+    .select("id, status, cancelled_at, cancellation_requested_at")
     .eq("user_id", userId)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()
 
-  if (existingSub?.status === "active") return
+  const cancellationCutoff = existingSub?.cancelled_at ?? existingSub?.cancellation_requested_at
+  if (
+    cancellationCutoff &&
+    (!occurredAt || new Date(occurredAt) <= new Date(cancellationCutoff))
+  ) return false
+  if (existingSub?.status === "active" && !cancellationCutoff) return false
 
   let isLifetime = false
   let effectiveFreeMonths = Number(metadata.free_months ?? 0)
@@ -295,6 +315,8 @@ async function activateIntroSubscription(supabase: any, userId: string, referenc
     intro_charge_paid_at: now.toISOString(),
     status: "active",
     auto_renew: true,
+    cancellation_requested_at: null,
+    cancelled_at: null,
     updated_at: now.toISOString(),
   }
 
@@ -325,6 +347,7 @@ async function activateIntroSubscription(supabase: any, userId: string, referenc
     is_read: false,
     data: { reference, expires_at: freePeriodEnd.toISOString(), source: "scheduled_reconciliation" },
   })
+  return true
 }
 
 async function ensureActiveQRCode(supabase: any, userId: string, expiresAt: Date) {

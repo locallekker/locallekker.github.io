@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../services/admin_service.dart';
 import '../../models/admin_dashboard_model.dart';
 import 'admin_engagement_screen.dart';
+import 'admin_guest_conversion_screen.dart';
 import '../auth/deal_selection_page.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:local_lekker/core/theme/app_colors.dart';
@@ -221,6 +222,26 @@ class _AdminOverviewScreenState extends State<AdminOverviewScreen> {
                   context,
                   MaterialPageRoute<void>(
                     builder: (_) => const AdminEngagementScreen(),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Card(
+              child: ListTile(
+                leading: const Icon(
+                  Icons.travel_explore,
+                  color: AppColors.primary,
+                ),
+                title: const Text('Guest browsing & conversion'),
+                subtitle: const Text(
+                  'See which deals guests try to request and how many sign up.',
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => const AdminGuestConversionScreen(),
                   ),
                 ),
               ),

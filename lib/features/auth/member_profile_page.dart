@@ -193,6 +193,7 @@ class _MemberProfilePageState extends State<MemberProfilePage> {
 
   bool _isLoading = true;
   bool _isSaving = false;
+  bool _providerCancellationPending = false;
   bool _isTpMember = false;
   bool _showDobValidationError = false;
   String? _profilePhotoUrl;
@@ -1536,9 +1537,15 @@ class _MemberProfilePageState extends State<MemberProfilePage> {
 
     if (result == true && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Account deactivated successfully'),
-          backgroundColor: Colors.green,
+        SnackBar(
+          content: Text(
+            _providerCancellationPending
+                ? 'Account deactivated. Recurring payment cancellation is pending; contact support.'
+                : 'Account deactivated successfully',
+          ),
+          backgroundColor: _providerCancellationPending
+              ? Colors.orange.shade800
+              : Colors.green,
         ),
       );
       // Navigate to welcome page (user is now logged out)
@@ -1552,7 +1559,9 @@ class _MemberProfilePageState extends State<MemberProfilePage> {
       if (user == null) throw Exception('No authenticated user');
 
       final adminService = AdminService();
-      await adminService.deactivateMember(user.id, reason: reason);
+        final result = await adminService.deactivateMember(user.id, reason: reason);
+        _providerCancellationPending =
+          result['provider_cancellation_pending'] == true;
 
       _logger.i(
         'Member account deactivated for user: ${user.id} with reason: $reason',

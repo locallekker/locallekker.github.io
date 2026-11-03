@@ -18,7 +18,8 @@ SELECT
   mcd.authorization_code,
   mcd.card_type,
   mcd.last4,
-  p.email                  AS card_email
+  p.email                  AS card_email,
+  s.paystack_subscription_code
 FROM public.subscriptions s
 JOIN public.profiles p ON p.id = s.user_id
 LEFT JOIN public.members_card_details mcd
@@ -26,6 +27,10 @@ LEFT JOIN public.members_card_details mcd
 WHERE
   s.status = 'active'
   AND s.auto_renew = true
+  -- If Paystack recurring subscriptions are active, Paystack itself will
+  -- perform the monthly charge and emit subscription.charge webhooks.
+  -- Exclude those rows to avoid a second local charge_authorization debit.
+  AND COALESCE(NULLIF(s.paystack_subscription_code, ''), NULL) IS NULL
   AND s.current_period_end <= now() + INTERVAL '1 hour'
   -- Idempotency: no successful renewal logged for this billing cycle yet
   AND NOT EXISTS (

@@ -24,7 +24,7 @@ class PartnersBanner extends StatelessWidget {
       onTap: onTap,
       title: 'Partners',
       subtitle: compact
-          ? 'Browse all partners'
+          ? 'Shops, services & local businesses'
           : 'Browse every Local Lekker trusted partner near you',
       icon: Icons.storefront_outlined,
       gradientColors: const [

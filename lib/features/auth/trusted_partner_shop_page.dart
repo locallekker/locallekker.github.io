@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../models/discount.dart';
 import '../../models/deal_schedule.dart';
 import '../../services/deal_authorization_service.dart';
+import '../../services/member_activation_service.dart';
 import '../../services/discount_service.dart';
 import '../../services/supabase_service.dart';
 import '../../services/admin_engagement_service.dart';
@@ -609,7 +610,8 @@ class _TrustedPartnerShopPageState extends State<TrustedPartnerShopPage> {
                 onPressed:
                     ((discount.isPercentItem &&
                             (enteredPrice == null || enteredPrice! <= 0)) ||
-                        selectedPaymentMethod == null)
+                        (selectedPaymentMethod == null &&
+                            SupabaseService.instance.getCurrentUser() != null))
                     ? null
                     : () async {
                         if (discount.isPercentItem &&
@@ -622,7 +624,8 @@ class _TrustedPartnerShopPageState extends State<TrustedPartnerShopPage> {
                           return;
                         }
 
-                        if (selectedPaymentMethod == null) {
+                        if (selectedPaymentMethod == null &&
+                            SupabaseService.instance.getCurrentUser() != null) {
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
                               content: Text(
@@ -637,15 +640,20 @@ class _TrustedPartnerShopPageState extends State<TrustedPartnerShopPage> {
                           final currentUser =
                               SupabaseService.instance.client.auth.currentUser;
                           if (currentUser == null) {
-                            if (mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('User not authenticated'),
-                                ),
-                              );
-                            }
+                            await MemberActivationService().ensureCanRequestDeal(
+                              context,
+                              savings: totalSavings,
+                              dealId: discount.id,
+                            );
                             return;
                           }
+
+                          final canRequest = await MemberActivationService()
+                              .ensureCanRequestDeal(
+                                context,
+                                savings: totalSavings,
+                              );
+                          if (!canRequest) return;
 
                           final dealAuthService = DealAuthorizationService();
                           await dealAuthService.requestDealAuthorization(

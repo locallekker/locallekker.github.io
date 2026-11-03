@@ -1525,6 +1525,8 @@ class PaystackService {
       return {'authorization_url': 'https://example.com/subscription/init', 'reference': 'dev_ref_${userId}'};
     }
 
+    var setupClaimed = false;
+    String? setupReference;
     try {
       // Get the plan code from environment variables based on frequency
       String? planCode = _getPlanCode(frequency);
@@ -1587,8 +1589,40 @@ class PaystackService {
         );
       }
 
+      final customerIdentifier = customerCode ?? userEmail;
+      if (await _hasActivePaystackSubscription(customerIdentifier)) {
+        throw Exception(
+          'Failed to initialize subscription: active_subscription_exists - '
+          'An existing Paystack subscription must be resolved before starting another.',
+        );
+      }
+
+      final claimResult = await Supabase.instance.client.rpc(
+        'claim_paystack_subscription_setup',
+        params: {'p_user_id': userId},
+      ) as bool?;
+      if (claimResult != true) {
+        throw Exception(
+          'Failed to initialize subscription: checkout_in_progress - '
+          'Another subscription checkout is already in progress.',
+        );
+      }
+      setupClaimed = true;
+
       // Generate the transaction reference upfront so we can return it
       final reference = 'sub_${userId}_${DateTime.now().millisecondsSinceEpoch}';
+      setupReference = reference;
+
+      final referenceRegistered = await Supabase.instance.client.rpc(
+        'register_paystack_subscription_setup_reference',
+        params: {'p_user_id': userId, 'p_reference': reference},
+      ) as bool?;
+      if (referenceRegistered != true) {
+        throw Exception(
+          'Failed to initialize subscription: checkout_reference_not_registered - '
+          'The checkout could not be safely associated with this account.',
+        );
+      }
 
       // Initialize subscription using Paystack's subscription API
       final response = await _proxyRequest(
@@ -1674,6 +1708,26 @@ class PaystackService {
       }
     } catch (e) {
       _logger.e('PaystackService: Error initializing subscription: $e');
+      if (setupClaimed) {
+        try {
+          if (setupReference == null) {
+            await Supabase.instance.client.rpc(
+              'release_paystack_subscription_setup',
+              params: {'p_user_id': userId},
+            );
+          } else {
+            await Supabase.instance.client.rpc(
+              'release_paystack_subscription_setup_for_reference',
+              params: {
+                'p_user_id': userId,
+                'p_reference': setupReference,
+              },
+            );
+          }
+        } catch (releaseError) {
+          _logger.w('Could not release subscription checkout claim: $releaseError');
+        }
+      }
       // Preserve already-tagged messages so we don't double-wrap them
       if (e is Exception && e.toString().contains('Failed to initialize subscription')) {
         rethrow;
@@ -2521,14 +2575,7 @@ class PaystackService {
             }
           }
         }
-
-        // Fallback: return the first subscription code regardless of status
-        final firstCode =
-            subscriptions[0]['subscription_code'] as String?;
-        _logger.i(
-          'PaystackService: Using first subscription code: $firstCode',
-        );
-        return firstCode;
+        return null;
       } else {
         _logger.w(
           'PaystackService: Failed to fetch subscriptions: ${response.body}',
@@ -2539,5 +2586,27 @@ class PaystackService {
       _logger.w('PaystackService: Error fetching customer subscriptions: $e');
       return null;
     }
+  }
+
+  Future<bool> _hasActivePaystackSubscription(String customerCodeOrEmail) async {
+    final response = await _proxyRequest(
+      path:
+          '/subscription?customer=${Uri.encodeQueryComponent(customerCodeOrEmail)}&perPage=100',
+    );
+    if (response.statusCode != 200) {
+      throw Exception(
+        'Could not verify existing Paystack subscriptions (${response.statusCode})',
+      );
+    }
+
+    final responseData = jsonDecode(response.body) as Map<String, dynamic>;
+    final subscriptions = responseData['data'] as List<dynamic>? ?? const [];
+    return subscriptions.any((subscription) {
+      if (subscription is! Map<String, dynamic>) return false;
+      final status = subscription['status']?.toString().toLowerCase();
+        return status == 'active' ||
+          status == 'attention' ||
+          status == 'non-renewing';
+    });
   }
 }

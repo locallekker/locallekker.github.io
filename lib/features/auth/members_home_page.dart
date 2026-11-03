@@ -11,6 +11,7 @@ import '../../services/cache_service.dart';
 import '../../services/qr_code_service.dart';
 import '../../services/discount_service.dart';
 import '../../services/fresh_local_notice.dart';
+import '../../services/guest_analytics_service.dart';
 import '../../models/notification.dart';
 import '../../widgets/custom_qr_code.dart';
 import '../../widgets/savings_summary_card.dart';
@@ -39,6 +40,7 @@ import '../../widgets/profile_photo.dart';
 import '../../widgets/age_verification_dialog.dart';
 import '../../widgets/member_category_banner_row.dart';
 import 'welcome_page.dart';
+import '../../widgets/guest_sign_in_banner.dart';
 
 class MembersHomePage extends StatefulWidget {
   final bool hideAppBar;
@@ -123,6 +125,8 @@ class _MembersHomePageState extends State<MembersHomePage>
 
   // Bottom nav
   int _selectedNavIndex = 0;
+  bool _showGuestBanner = true;
+  bool get _isGuest => SupabaseService.instance.getCurrentUser() == null;
   Timer? _qrRotationTimer;
   Timer? _countdownTimer;
   RealtimeChannel? _chatMessagesChannel;
@@ -278,6 +282,15 @@ class _MembersHomePageState extends State<MembersHomePage>
   @override
   void initState() {
     super.initState();
+    if (_isGuest) {
+      _isSavingsLoading = false;
+      _isLoadingPendingPayments = false;
+      _loadTrustedPartnersCount();
+      _loadMemberCityProvince();
+      _loadFreshLocalAvailability();
+      unawaited(GuestAnalyticsService().recordVisit());
+      return;
+    }
     _seedProfileFromSession();
     WidgetsBinding.instance.addObserver(this);
     final usedSnapshot = _restoreFromSessionSnapshot();
@@ -837,7 +850,7 @@ class _MembersHomePageState extends State<MembersHomePage>
       if (!context.mounted) return;
       Navigator.pushAndRemoveUntil(
         context,
-        MaterialPageRoute(builder: (context) => const WelcomePage()),
+        MaterialPageRoute(builder: (context) => const MembersHomePage()),
         (route) => false,
       );
     } catch (e) {
@@ -1044,7 +1057,7 @@ class _MembersHomePageState extends State<MembersHomePage>
       List<dynamic> partnersResponse;
       List<dynamic> dealsResponse;
 
-      if (cachedPartners != null && cachedDeals != null) {
+      if (!_isGuest && cachedPartners != null && cachedDeals != null) {
         // Use cached data for instant display
         partnersResponse = cachedPartners['partners'];
         dealsResponse = cachedDeals['deals'];
@@ -1055,7 +1068,7 @@ class _MembersHomePageState extends State<MembersHomePage>
         // Fetch from database
         partnersResponse =
             await SupabaseService.instance.client
-                    .from('businesses')
+                    .from(SupabaseService.instance.businessCatalogueTable)
                     .select(
                       'id, owner_member_id, name, category, address, logo_url',
                     )
@@ -1129,6 +1142,7 @@ class _MembersHomePageState extends State<MembersHomePage>
         }
       }
 
+      if (!mounted) return;
       setState(() {
         _trustedPartnersCount = partnersResponse.length;
         _availableDealsCount = validDeals.length;
@@ -1137,6 +1151,17 @@ class _MembersHomePageState extends State<MembersHomePage>
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error loading trusted partners count: $e');
+      }
+      if (!mounted) return;
+      if (_isGuest) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Could not load the deal catalogue. Please try Find Deals again.',
+            ),
+            backgroundColor: AppColors.error,
+          ),
+        );
       }
       setState(() {
         _trustedPartnersCount = 0;
@@ -1289,7 +1314,6 @@ class _MembersHomePageState extends State<MembersHomePage>
     setState(() => _isLoadingCities = true);
     try {
       final user = SupabaseService.instance.getCurrentUser();
-      if (user == null) return;
 
       // Restore from SharedPreferences first for fast display
       final prefs = await SharedPreferences.getInstance();
@@ -1305,6 +1329,11 @@ class _MembersHomePageState extends State<MembersHomePage>
             _isLoadingCities = false;
           });
         }
+        return;
+      }
+
+      if (user == null) {
+        if (mounted) setState(() => _isLoadingCities = false);
         return;
       }
 
@@ -1906,17 +1935,34 @@ class _MembersHomePageState extends State<MembersHomePage>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              if (_isGuest && _showGuestBanner)
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: GuestSignInBanner(
+                    onSignIn: _openGuestSignIn,
+                    onDismiss: () => setState(() => _showGuestBanner = false),
+                  ),
+                ),
               // ── Hero ────────────────────────────────────────────────────
-              _buildMemberHero(
-                context,
-                displayName,
-                totalSaved,
-                totalTips,
-                totalPaid,
-                totalInAppPayments,
-                totalPosPayments,
-                totalDeals,
-              ),
+              if (_isGuest)
+                const Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Text(
+                    'Discover Local Lekker deals',
+                    style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                  ),
+                )
+              else
+                _buildMemberHero(
+                  context,
+                  displayName,
+                  totalSaved,
+                  totalTips,
+                  totalPaid,
+                  totalInAppPayments,
+                  totalPosPayments,
+                  totalDeals,
+                ),
 
               // ── Promo banners ────────────────────────────────────────────
               if (_activePromotions.isNotEmpty)
@@ -2818,11 +2864,17 @@ class _MembersHomePageState extends State<MembersHomePage>
                 activeIcon: Icons.receipt_long,
                 label: 'Receipts',
                 onTap: () {
+                  if (_isGuest) {
+                    _openGuestSignIn();
+                    return;
+                  }
                   setState(() => _selectedNavIndex = 1);
                   Navigator.push(
                     context,
                     MaterialPageRoute(builder: (_) => const MemberReceiptsPage()),
-                  ).then((_) => setState(() => _selectedNavIndex = 0));
+                  ).then((_) {
+                    if (mounted) setState(() => _selectedNavIndex = 0);
+                  });
                 },
               ),
               _buildNavItem(
@@ -2831,6 +2883,10 @@ class _MembersHomePageState extends State<MembersHomePage>
                 activeIcon: Icons.person,
                 label: 'Profile',
                 onTap: () async {
+                  if (_isGuest) {
+                    await _openGuestSignIn();
+                    return;
+                  }
                   setState(() => _selectedNavIndex = 2);
                   await Navigator.push(
                     context,
@@ -2844,6 +2900,12 @@ class _MembersHomePageState extends State<MembersHomePage>
           ),
         ),
       ),
+    );
+  }
+
+  Future<void> _openGuestSignIn() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const WelcomePage()),
     );
   }
 

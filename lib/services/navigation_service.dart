@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:local_lekker/services/supabase_service.dart';
+import 'package:local_lekker/services/guest_analytics_service.dart';
 import 'package:local_lekker/services/payment_status_service.dart';
 import 'package:local_lekker/services/paystack_service.dart';
 import 'package:local_lekker/services/subscription_service.dart';
+import 'package:local_lekker/services/member_activation_service.dart';
 import 'package:local_lekker/features/auth/welcome_page.dart';
 import 'package:local_lekker/features/auth/password_reset_page.dart';
 import 'package:local_lekker/features/auth/trusted_partner_home_page.dart';
@@ -455,6 +459,10 @@ class NavigationService {
 
   /// Determine the appropriate initial screen based on member authentication and role
   Future<Widget> getInitialScreen() async {
+    // Password-reset deep links are resolved by AppInitializer before this call.
+    if (SupabaseService.instance.getCurrentUser() == null) {
+      return const MembersHomePage();
+    }
     final logger = Logger();
 
     // FIRST: Check if user has an active password recovery session
@@ -503,8 +511,7 @@ class NavigationService {
       final member = SupabaseService.instance.getCurrentUser();
 
       if (member == null) {
-        // Member not authenticated, show welcome page
-        return const WelcomePage();
+        return const MembersHomePage();
       }
 
       // Check if user is deactivated before proceeding
@@ -566,7 +573,7 @@ class NavigationService {
               );
             }
             await SupabaseService.instance.signOut();
-            return const WelcomePage();
+            return const MembersHomePage();
           }
           if (kDebugMode) {
             print(
@@ -649,53 +656,9 @@ class NavigationService {
             );
             return const MemberProfilePage();
           }
-          // CRITICAL: Always require member terms acceptance BEFORE payment screens
-          final memberAccepted = await SupabaseService.instance
-              .hasMemberAcceptedTerms(member.id, profile: profile);
-          if (!memberAccepted) {
-            _logMemberRoutingTrace(
-              source: 'getInitialScreen',
-              userId: member.id,
-              email: member.email,
-              role: role,
-              profileLoaded: profileLoaded,
-              profileComplete: profileComplete,
-              memberTermsAccepted: memberAccepted,
-            );
-            return const MemberTermsPage();
-          }
-          // Subscription status was fetched in parallel with the profile above.
-          if (subscriptionStatus == 'active') {
-            _logMemberRoutingTrace(
-              source: 'getInitialScreen',
-              userId: member.id,
-              email: member.email,
-              role: role,
-              profileLoaded: profileLoaded,
-              profileComplete: profileComplete,
-              memberTermsAccepted: memberAccepted,
-              subscriptionStatus: subscriptionStatus,
-              isReactivation: false,
-            );
-            return const MembersHomePage();
-          }
-          // If a non-active subscription exists (expired/cancelled/etc.), treat
-          // this as reactivation rather than first-time signup.
-          const reactivationStatuses = {
-            'expired',
-            'cancelled',
-            'inactive',
-            'paused',
-            'past_due',
-            'failed',
-            'payment_failed',
-            'suspended',
-            'unpaid',
-          };
-          final isReactivation =
-              subscriptionStatus != null &&
-              reactivationStatuses.contains(subscriptionStatus.toLowerCase());
-
+          // Browse-free model: members with a complete profile can use the
+          // app without accepting terms or paying. Terms + payment are only
+          // required when they opt to activate or request a deal.
           _logMemberRoutingTrace(
             source: 'getInitialScreen',
             userId: member.id,
@@ -703,15 +666,9 @@ class NavigationService {
             role: role,
             profileLoaded: profileLoaded,
             profileComplete: profileComplete,
-            memberTermsAccepted: memberAccepted,
             subscriptionStatus: subscriptionStatus,
-            isReactivation: isReactivation,
           );
-
-          // Only show payment screen after terms are accepted
-          return PaymentRequiredScreen(
-            isReactivation: isReactivation,
-          );
+          return const MembersHomePage();
       }
     } catch (e) {
       // On error, check if user is still authenticated before falling back to welcome
@@ -720,7 +677,7 @@ class NavigationService {
       }
       final currentUser = SupabaseService.instance.getCurrentUser();
       if (currentUser == null) {
-        return const WelcomePage();
+        return const MembersHomePage();
       }
       // User is authenticated but something went wrong - show a safe default
       // based on what we know from the error context rather than signing them out
@@ -743,13 +700,13 @@ class NavigationService {
     try {
       final member = SupabaseService.instance.getCurrentUser();
       if (member == null) {
-        // No authenticated member, go to welcome
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (context) => const WelcomePage()),
+          MaterialPageRoute(builder: (context) => const MembersHomePage()),
         );
         return;
       }
+      unawaited(GuestAnalyticsService().linkConversion());
 
       final role = await SupabaseService.instance.getUserRole(
         userId: member.id,
@@ -824,37 +781,18 @@ class NavigationService {
             homePage = const MemberProfilePage();
             break;
           }
-          // Always gate on member terms first
-          final memberAccepted = await SupabaseService.instance
-              .hasMemberAcceptedTerms(member.id, profile: profile);
-          if (!memberAccepted) {
-            _logMemberRoutingTrace(
-              source: 'navigateToHomeAfterAuth',
-              userId: member.id,
-              email: member.email,
-              role: role,
-              profileLoaded: profileLoaded,
-              profileComplete: profileComplete,
-              memberTermsAccepted: memberAccepted,
-            );
-            homePage = const MemberTermsPage();
-            break;
+          // Browse-free model: terms are not forced here; they are collected
+          // when the member opts to pay. New members (no subscription yet)
+          // get a one-time, skippable activation offer after signup.
+          final isActive = subscriptionStatus == 'active';
+          var showActivationOffer = false;
+          if (!isActive && subscriptionStatus == null) {
+            final activation = MemberActivationService();
+            if (!await activation.wasActivationOfferShown(member.id)) {
+              await activation.markActivationOfferShown(member.id);
+              showActivationOffer = true;
+            }
           }
-          // Subscription status was fetched in parallel with the profile above.
-          const reactivationStatuses = {
-            'expired',
-            'cancelled',
-            'inactive',
-            'paused',
-            'past_due',
-            'failed',
-            'payment_failed',
-            'suspended',
-            'unpaid',
-          };
-          final isReactivation =
-              subscriptionStatus != null &&
-              reactivationStatuses.contains(subscriptionStatus.toLowerCase());
 
           _logMemberRoutingTrace(
             source: 'navigateToHomeAfterAuth',
@@ -863,16 +801,12 @@ class NavigationService {
             role: role,
             profileLoaded: profileLoaded,
             profileComplete: profileComplete,
-            memberTermsAccepted: memberAccepted,
             subscriptionStatus: subscriptionStatus,
-            isReactivation: isReactivation,
           );
 
-          homePage = subscriptionStatus == 'active'
-              ? const MembersHomePage()
-              : PaymentRequiredScreen(
-                  isReactivation: isReactivation,
-                );
+          homePage = showActivationOffer
+              ? const PaymentRequiredScreen(allowSkip: true)
+              : const MembersHomePage();
           break;
       }
 
@@ -895,10 +829,9 @@ class NavigationService {
     try {
       final member = SupabaseService.instance.getCurrentUser();
       if (member == null) {
-        // No authenticated member, go to welcome
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (context) => const WelcomePage()),
+          MaterialPageRoute(builder: (context) => const MembersHomePage()),
         );
         return;
       }
@@ -973,7 +906,7 @@ class NavigationService {
             final subStatus = await _getSubscriptionStatus(member.id);
             homePage = subStatus == 'active'
                 ? const MembersHomePage()
-                : const PaymentRequiredScreen();
+                : const PaymentRequiredScreen(allowSkip: true);
           }
           break;
       }

@@ -173,13 +173,31 @@ async function handleChargeSuccess(supabase: any, data: any) {
 
     // â”€â”€ Subscription payment â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (paymentType === 'subscription') {
-        await recoverSubscriptionPayment(supabase, userId, reference, amount, metadata)
+        await recoverSubscriptionPayment(
+            supabase,
+            userId,
+            reference,
+            amount,
+            metadata,
+            data.paid_at ?? data.created_at ?? null,
+        )
+        await supabase.rpc('release_paystack_subscription_setup_for_reference', {
+            p_user_id: userId,
+            p_reference: reference,
+        })
         return
     }
 
     // â”€â”€ Intro campaign (R1) entry-offer payment â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (paymentType === 'promotion_intro') {
-        await recoverIntroCampaignPayment(supabase, userId, reference, amount, metadata)
+        await recoverIntroCampaignPayment(
+            supabase,
+            userId,
+            reference,
+            amount,
+            metadata,
+            data.paid_at ?? data.created_at ?? null,
+        )
         return
     }
 
@@ -269,63 +287,31 @@ async function recoverSubscriptionPayment(
     reference: string,
     amount: number,
     metadata: any,
+    occurredAt: string | null,
 ) {
     console.log(`Recovering subscription payment for user ${userId}`)
 
-    // Check if already processed (idempotent)
-    const { data: existingSub } = await supabase
-        .from('subscriptions')
-        .select('id, status, expires_at, current_period_end')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .single()
+    const { data: payment, error } = await supabase.rpc(
+        'apply_paystack_subscription_payment_checked',
+        {
+            p_reference: reference,
+            p_event_type: 'charge.success',
+            p_user_id: userId,
+            p_amount_cents: amount,
+            p_occurred_at: occurredAt,
+            p_plan_type: 'subscription',
+            p_renewal_charge_cents: Number(metadata.renewal_charge_cents ?? 9900),
+        },
+    )
 
-    // If subscription is already active, this was handled by the app
-    if (existingSub?.status === 'active') {
-        console.log('Subscription already active, skipping')
+    if (error) throw error
+    if (!payment?.applied) {
+        console.log(`Subscription payment not applied: ${payment?.reason ?? 'unknown'}`)
         return
     }
 
-    // Calculate expiry: 30 days from now (or from current expiry if still valid)
     const now = new Date()
-    let baseDate = now
-    const expiresAt = existingSub?.expires_at || existingSub?.current_period_end
-    if (expiresAt) {
-        const existing = new Date(expiresAt)
-        if (existing > now) baseDate = existing
-    }
-    const newExpiry = oneCalendarMonthFrom(baseDate)
-    const renewalChargeCents = Number(metadata.renewal_charge_cents ?? 9900)
-
-    // Update subscription
-    if (existingSub) {
-        await supabase
-            .from('subscriptions')
-            .update({
-                status: 'active',
-                plan_type: 'subscription',
-                current_period_start: now.toISOString(),
-                current_period_end: newExpiry.toISOString(),
-                auto_renew: true,
-                renewal_charge_cents: renewalChargeCents,
-                updated_at: now.toISOString(),
-            })
-            .eq('id', existingSub.id)
-    } else {
-        // Create new subscription
-        await supabase.from('subscriptions').insert({
-            user_id: userId,
-            status: 'active',
-            plan_type: 'subscription',
-            current_period_start: now.toISOString(),
-            current_period_end: newExpiry.toISOString(),
-            auto_renew: true,
-            renewal_charge_cents: renewalChargeCents,
-            created_at: now.toISOString(),
-            updated_at: now.toISOString(),
-        })
-    }
+    const newExpiry = new Date(payment.current_period_end)
 
     // Activate profile
     await supabase
@@ -368,6 +354,7 @@ async function recoverIntroCampaignPayment(
     reference: string,
     amount: number,
     metadata: any,
+    occurredAt: string | null,
 ) {
     console.log(`Recovering intro campaign payment for user ${userId}`)
 
@@ -384,13 +371,20 @@ async function recoverIntroCampaignPayment(
     // Idempotent: if a subscription is already active, the app handled it.
     const { data: existingSub } = await supabase
         .from('subscriptions')
-        .select('id, status')
+        .select('id, status, auto_renew, cancelled_at, cancellation_requested_at')
         .eq('user_id', userId)
         .order('created_at', { ascending: false })
         .limit(1)
         .single()
 
-    if (existingSub?.status === 'active') {
+    const cancellationCutoff =
+        existingSub?.cancelled_at ?? existingSub?.cancellation_requested_at
+    if (cancellationCutoff && (!occurredAt || new Date(occurredAt) <= new Date(cancellationCutoff))) {
+        console.log('Ignoring intro payment that predates cancellation')
+        return
+    }
+
+    if (existingSub?.status === 'active' && existingSub.auto_renew === true && !cancellationCutoff) {
         console.log('Intro subscription already active, skipping')
         return
     }
@@ -457,6 +451,8 @@ async function recoverIntroCampaignPayment(
         intro_charge_paid_at: now.toISOString(),
         status: 'active',
         auto_renew: true,
+        cancellation_requested_at: null,
+        cancelled_at: null,
         updated_at: now.toISOString(),
     }
 
@@ -762,19 +758,41 @@ async function handleSubscriptionCreate(supabase: any, data: any) {
     // Find the user's most recent subscription and save the Paystack subscription code
     const { data: existingSub } = await supabase
         .from('subscriptions')
-        .select('id, paystack_subscription_code')
+        .select('id, status, auto_renew, paystack_subscription_code, paystack_subscription_created_at, cancellation_requested_at')
         .eq('user_id', userId)
         .order('created_at', { ascending: false })
         .limit(1)
         .single()
 
     if (existingSub) {
-        // Only update if not already set (avoid overwriting with stale data)
-        if (!existingSub.paystack_subscription_code) {
+        const cancellationRequestedAt = existingSub.cancellation_requested_at
+        const providerCreatedAt = data.createdAt ?? data.created_at ?? null
+        if (
+            cancellationRequestedAt &&
+            (!providerCreatedAt || new Date(providerCreatedAt) <= new Date(cancellationRequestedAt))
+        ) {
+            console.log('Ignoring subscription.create event that predates cancellation')
+            return
+        }
+
+        const existingProviderCreatedAt = existingSub.paystack_subscription_created_at
+            ? new Date(existingSub.paystack_subscription_created_at).getTime()
+            : null
+        const incomingProviderCreatedAt = providerCreatedAt
+            ? new Date(providerCreatedAt).getTime()
+            : null
+        const eventIsNewerSubscription =
+            !existingSub.paystack_subscription_code ||
+            existingSub.paystack_subscription_code === subscriptionCode ||
+            (incomingProviderCreatedAt !== null &&
+                (existingProviderCreatedAt === null || incomingProviderCreatedAt > existingProviderCreatedAt))
+
+        if (eventIsNewerSubscription) {
             await supabase
                 .from('subscriptions')
                 .update({
                     paystack_subscription_code: subscriptionCode,
+                    paystack_subscription_created_at: providerCreatedAt,
                     updated_at: new Date().toISOString(),
                 })
                 .eq('id', existingSub.id)
@@ -786,6 +804,7 @@ async function handleSubscriptionCreate(supabase: any, data: any) {
     } else {
         console.warn(`No subscription record found for user ${userId} to attach subscription_code`)
     }
+
 }
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -793,7 +812,6 @@ async function handleSubscriptionCreate(supabase: any, data: any) {
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 async function handleSubscriptionCharge(supabase: any, data: any) {
     const subscriptionCode = data.subscription?.subscription_code || data.subscription_code
-    const customer = data.customer
     const amount = data.amount
     const status = data.status
     const reference = data.reference
@@ -805,66 +823,31 @@ async function handleSubscriptionCharge(supabase: any, data: any) {
         return
     }
 
-    // Find user by customer code, fallback to email
-    let userId: string | null = null
-
-    if (customer?.customer_code) {
-        const { data: profileByCode } = await supabase
-            .from('profiles')
-            .select('id')
-            .eq('paystack_customer_code', customer.customer_code)
-            .single()
-
-        if (profileByCode) {
-            userId = profileByCode.id
-        }
-    }
-
-    if (!userId && customer?.email) {
-        const { data: profileByEmail } = await supabase
-            .from('profiles')
-            .select('id')
-            .eq('email', customer.email)
-            .single()
-        userId = profileByEmail?.id
-    }
-
-    if (!userId) {
-        console.error(`User not found for customer: ${customer?.customer_code} / ${customer?.email}`)
+    if (!reference || !subscriptionCode) {
+        console.error('Subscription charge is missing its reference or subscription code')
         return
     }
 
-    // Get current subscription to compute new expiry
-    const { data: currentSub } = await supabase
-        .from('subscriptions')
-        .select('id, expires_at, current_period_end')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .single()
+    const { data: payment, error } = await supabase.rpc(
+        'apply_paystack_subscription_payment',
+        {
+            p_reference: reference,
+            p_event_type: 'subscription.charge',
+            p_subscription_code: subscriptionCode,
+            p_amount_cents: Number(amount ?? 0),
+            p_occurred_at: data.paid_at ?? data.created_at ?? null,
+        },
+    )
 
+    if (error) throw error
+    if (!payment?.applied) {
+        console.warn(`Subscription charge not applied: ${payment?.reason ?? 'unknown'}`)
+        return
+    }
+
+    const userId = payment.user_id
+    const newExpiry = new Date(payment.current_period_end)
     const now = new Date()
-    let baseDate = now
-    const expiresAt = currentSub?.expires_at || currentSub?.current_period_end
-    if (expiresAt) {
-        const existing = new Date(expiresAt)
-        if (existing > now) baseDate = existing
-    }
-
-    const newExpiry = oneCalendarMonthFrom(baseDate)
-
-    // Update subscription
-    if (currentSub) {
-        await supabase
-            .from('subscriptions')
-            .update({
-                status: 'active',
-                current_period_end: newExpiry.toISOString(),
-                paystack_subscription_code: subscriptionCode,
-                updated_at: now.toISOString(),
-            })
-            .eq('id', currentSub.id)
-    }
 
     // Reactivate profile
     await supabase
@@ -907,7 +890,7 @@ async function handlePaymentFailed(supabase: any, data: any) {
     // Find user by subscription code
     const { data: subscription } = await supabase
         .from('subscriptions')
-        .select('user_id')
+        .select('user_id, status, auto_renew')
         .eq('paystack_subscription_code', subscriptionCode)
         .single()
 
@@ -916,14 +899,25 @@ async function handlePaymentFailed(supabase: any, data: any) {
         return
     }
 
-    const userId = subscription.user_id
+    if (subscription.status !== 'active' || subscription.auto_renew !== true) {
+        console.log('Ignoring payment failure for a cancelled or non-renewing subscription')
+        return
+    }
+
     const now = new Date().toISOString()
 
     // Mark subscription as payment_failed
-    await supabase
+    const { data: updatedSubscriptions, error } = await supabase
         .from('subscriptions')
         .update({ status: 'payment_failed', updated_at: now })
         .eq('paystack_subscription_code', subscriptionCode)
+        .eq('status', 'active')
+        .eq('auto_renew', true)
+        .select('user_id')
+
+    if (error) throw error
+    const userId = updatedSubscriptions?.[0]?.user_id
+    if (!userId) return
 
     // Deactivate QR codes
     await supabase
@@ -954,148 +948,159 @@ async function handlePaymentFailed(supabase: any, data: any) {
     })
 
     console.log(`Payment failed handled for ${userId}`)
-}
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    async function handleSubscriptionDisable(supabase: any, data: any) {
+        const subscriptionCode = data.subscription_code
+        console.log(`subscription.disable sub=${subscriptionCode}`)
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-// subscription.disable â€” voluntary cancellation
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-async function handleSubscriptionDisable(supabase: any, data: any) {
-    const subscriptionCode = data.subscription_code
-    console.log(`subscription.disable sub=${subscriptionCode}`)
+        // Find subscription
+        const { data: subscription } = await supabase
+            .from('subscriptions')
+            .select('user_id, cancellation_requested_at')
+            .eq('paystack_subscription_code', subscriptionCode)
+            .single()
 
-    // Find subscription
-    const { data: subscription } = await supabase
-        .from('subscriptions')
-        .select('user_id')
-        .eq('paystack_subscription_code', subscriptionCode)
-        .single()
+        if (!subscription) {
+            console.error('Subscription not found:', subscriptionCode)
+            return
+        }
 
-    if (!subscription) {
-        console.error('Subscription not found:', subscriptionCode)
-        return
-    }
+        const userId = subscription.user_id
+        const now = new Date().toISOString()
+        const cancellationRequestedAt =
+            subscription.cancellation_requested_at ?? data.updatedAt ?? data.updated_at ?? now
 
-    const userId = subscription.user_id
-    const now = new Date().toISOString()
+        await supabase
+            .from('subscriptions')
+            .update({
+                status: 'cancelled',
+                auto_renew: false,
+                cancellation_requested_at: cancellationRequestedAt,
+                cancelled_at: now,
+                renewal_in_progress_at: null,
+                updated_at: now,
+            })
+            .eq('paystack_subscription_code', subscriptionCode)
 
-    await supabase
-        .from('subscriptions')
-        .update({ status: 'cancelled', updated_at: now })
-        .eq('paystack_subscription_code', subscriptionCode)
-
-    // Don't deactivate QR right away â€” let current period expire naturally
-    // The app's checkAndHandleExpiredSubscription() handles expiry
-
-    console.log(`Subscription cancelled for ${userId}`)
-}
-
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-// Helpers
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-async function ensureActiveQRCode(supabase: any, userId: string) {
-    const { data: existingQR } = await supabase
-        .from('user_qr_codes')
-        .select('id')
-        .eq('user_id', userId)
-        .eq('is_active', true)
-        .single()
-
-    if (existingQR) {
-        console.log('User already has active QR code')
-        return
-    }
-
-    const now = new Date()
-    const expiresAt = oneCalendarMonthFrom(now)
-
-    await supabase.from('user_qr_codes').insert({
-        user_id: userId,
-        qr_code: `QR_${userId}_${now.getTime()}`,
-        is_active: true,
-        expires_at: expiresAt.toISOString(),
-        created_at: now.toISOString(),
-        updated_at: now.toISOString(),
-    })
-
-    console.log(`Created QR code for ${userId}`)
-}
-
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-// transfer.failed / transfer.reversed
-// Fires when Paystack cannot settle funds to a subaccount's bank account.
-// This is the server-side signal for the "pending 24h then failed" pattern
-// caused by unverifiable ZAR bank accounts on subaccounts.
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-async function handleTransferFailed(supabase: any, data: any, event: string) {
-    const transferCode = data.transfer_code ?? data.reference ?? 'unknown'
-    const recipient = data.recipient
-    const subaccountCode = recipient?.details?.account_number
-        ? `ACCT_${recipient?.code ?? 'unknown'}`
-        : recipient?.code ?? 'unknown'
-    const amount = (data.amount ?? 0) / 100
-    const reason = data.reason ?? data.gateway_response ?? 'Unknown reason'
-    const now = new Date().toISOString()
-
-    console.error(`${event}: transfer_code=${transferCode} subaccount=${subaccountCode} amount=R${amount} reason=${reason}`)
-
-    // Find the trusted partner linked to this subaccount so we can notify them
-    const { data: bankingRow } = await supabase
-        .from('trusted_partner_bank_accounts')
-        .select('user_id, bank_name, account_holder_name')
-        .eq('subaccount_code', subaccountCode)
-        .maybeSingle()
-
-    if (bankingRow) {
-        const partnerId = bankingRow.user_id
-
-        // Notify the trusted partner that their settlement failed
-        await supabase.from('notifications').insert({
-            user_id: partnerId,
-            title: 'âš ï¸ Settlement Failed',
-            message: `A payment settlement of R${amount.toFixed(2)} to your bank account failed. Please verify your banking details in your Business Profile to avoid future payment issues.`,
-            type: 'settlement_failed',
-            is_read: false,
-            data: {
-                transfer_code: transferCode,
-                subaccount_code: subaccountCode,
-                amount,
-                reason,
-                event,
-                failed_at: now,
-                action_required: 'update_banking_details',
-            },
+        await supabase.rpc('release_paystack_subscription_setup', {
+            p_user_id: userId,
         })
 
-        console.log(`Settlement failure notification sent to partner ${partnerId}`)
-    } else {
-        // Subaccount not matched in DB â€” log for manual investigation
-        console.error(`transfer.failed: No DB record for subaccount=${subaccountCode}. Manual investigation required. Amount: R${amount}`)
+        // Don't deactivate QR right away â€” let current period expire naturally
+        // The app's checkAndHandleExpiredSubscription() handles expiry
+
+        console.log(`Subscription cancelled for ${userId}`)
     }
 
-    // Notify all admin users so they can investigate and manually refund/reroute
-    const { data: admins } = await supabase
-        .from('profiles')
-        .select('id')
-        .eq('role', 'admin')
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // Helpers
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    async function ensureActiveQRCode(supabase: any, userId: string) {
+        const { data: existingQR } = await supabase
+            .from('user_qr_codes')
+            .select('id')
+            .eq('user_id', userId)
+            .eq('is_active', true)
+            .single()
 
-    if (admins && admins.length > 0) {
-        const adminNotifications = admins.map((admin: any) => ({
-            user_id: admin.id,
-            title: 'ðŸš¨ Partner Settlement Failed',
-            message: `Settlement of R${amount.toFixed(2)} to subaccount ${subaccountCode} failed (${reason}). Manual action required.`,
-            type: 'admin_settlement_failed',
-            is_read: false,
-            data: {
-                transfer_code: transferCode,
-                subaccount_code: subaccountCode,
-                amount,
-                reason,
-                event,
-                failed_at: now,
-                partner_user_id: bankingRow?.user_id ?? null,
-            },
-        }))
-        await supabase.from('notifications').insert(adminNotifications)
-        console.log(`Admin settlement failure alert sent to ${admins.length} admin(s)`)
+        if (existingQR) {
+            console.log('User already has active QR code')
+            return
+        }
+
+        const now = new Date()
+        const expiresAt = oneCalendarMonthFrom(now)
+
+        await supabase.from('user_qr_codes').insert({
+            user_id: userId,
+            qr_code: `QR_${userId}_${now.getTime()}`,
+            is_active: true,
+            expires_at: expiresAt.toISOString(),
+            created_at: now.toISOString(),
+            updated_at: now.toISOString(),
+        })
+
+        console.log(`Created QR code for ${userId}`)
+    }
+
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // transfer.failed / transfer.reversed
+    // Fires when Paystack cannot settle funds to a subaccount's bank account.
+    // This is the server-side signal for the "pending 24h then failed" pattern
+    // caused by unverifiable ZAR bank accounts on subaccounts.
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    async function handleTransferFailed(supabase: any, data: any, event: string) {
+        const transferCode = data.transfer_code ?? data.reference ?? 'unknown'
+        const recipient = data.recipient
+        const subaccountCode = recipient?.details?.account_number
+            ? `ACCT_${recipient?.code ?? 'unknown'}`
+            : recipient?.code ?? 'unknown'
+        const amount = (data.amount ?? 0) / 100
+        const reason = data.reason ?? data.gateway_response ?? 'Unknown reason'
+        const now = new Date().toISOString()
+
+        console.error(`${event}: transfer_code=${transferCode} subaccount=${subaccountCode} amount=R${amount} reason=${reason}`)
+
+        // Find the trusted partner linked to this subaccount so we can notify them
+        const { data: bankingRow } = await supabase
+            .from('trusted_partner_bank_accounts')
+            .select('user_id, bank_name, account_holder_name')
+            .eq('subaccount_code', subaccountCode)
+            .maybeSingle()
+
+        if (bankingRow) {
+            const partnerId = bankingRow.user_id
+
+            // Notify the trusted partner that their settlement failed
+            await supabase.from('notifications').insert({
+                user_id: partnerId,
+                title: 'âš ï¸ Settlement Failed',
+                message: `A payment settlement of R${amount.toFixed(2)} to your bank account failed. Please verify your banking details in your Business Profile to avoid future payment issues.`,
+                type: 'settlement_failed',
+                is_read: false,
+                data: {
+                    transfer_code: transferCode,
+                    subaccount_code: subaccountCode,
+                    amount,
+                    reason,
+                    event,
+                    failed_at: now,
+                    action_required: 'update_banking_details',
+                },
+            })
+
+            console.log(`Settlement failure notification sent to partner ${partnerId}`)
+        } else {
+            // Subaccount not matched in DB â€” log for manual investigation
+            console.error(`transfer.failed: No DB record for subaccount=${subaccountCode}. Manual investigation required. Amount: R${amount}`)
+        }
+
+        // Notify all admin users so they can investigate and manually refund/reroute
+        const { data: admins } = await supabase
+            .from('profiles')
+            .select('id')
+            .eq('role', 'admin')
+
+        if (admins && admins.length > 0) {
+            const adminNotifications = admins.map((admin: any) => ({
+                user_id: admin.id,
+                title: 'ðŸš¨ Partner Settlement Failed',
+                message: `Settlement of R${amount.toFixed(2)} to subaccount ${subaccountCode} failed (${reason}). Manual action required.`,
+                type: 'admin_settlement_failed',
+                is_read: false,
+                data: {
+                    transfer_code: transferCode,
+                    subaccount_code: subaccountCode,
+                    amount,
+                    reason,
+                    event,
+                    failed_at: now,
+                    partner_user_id: bankingRow?.user_id ?? null,
+                },
+            }))
+
+            await supabase.from('notifications').insert(adminNotifications)
+            console.log(`Admin settlement failure alert sent to ${admins.length} admin(s)`)
+        }
     }
 }

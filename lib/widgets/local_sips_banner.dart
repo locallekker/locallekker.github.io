@@ -30,7 +30,7 @@ class LocalSipsBanner extends StatelessWidget {
       onTap: onTap,
       title: kLocalSipsCategory,
       subtitle: compact
-          ? 'Local wines & craft spirits'
+          ? 'Local wine, beer & spirits'
           : 'Locally produced wines, beers and craft spirits',
       icon: Icons.wine_bar,
       gradientColors: const [_wineLight, _wineMid, _wineDark],

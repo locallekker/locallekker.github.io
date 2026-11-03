@@ -10,6 +10,7 @@ import '../chat/chat_thread_page.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:local_lekker/core/theme/app_colors.dart';
 import '../../core/constants/deal_categories.dart';
+import 'welcome_page.dart';
 
 class TrustedPartnersByCategoryPage extends StatefulWidget {
   final String? cityFilter;
@@ -105,7 +106,7 @@ class _TrustedPartnersByCategoryPageState
       });
       // categories are defined in BusinessProfilePage; here we query distinct business categories
       final res = await SupabaseService.instance.client
-          .from('businesses')
+          .from(SupabaseService.instance.businessCatalogueTable)
           .select('category')
           .order('category', ascending: true);
 
@@ -162,7 +163,7 @@ class _TrustedPartnersByCategoryPageState
 
       // Fetch from database
       final query = SupabaseService.instance.client
-          .from('businesses')
+          .from(SupabaseService.instance.businessCatalogueTable)
           .select(
             'id, owner_member_id, name, category, city, address, logo_url, facebook_handle, instagram_handle, website_url, business_email',
           );
@@ -225,7 +226,8 @@ class _TrustedPartnersByCategoryPageState
       final ownerIds = businesses.map((b) => b['owner_member_id']).toList();
 
       // Batch fetch ALL profiles in ONE query
-      final profiles = ownerIds.isNotEmpty
+      final profiles = ownerIds.isNotEmpty &&
+              SupabaseService.instance.getCurrentUser() != null
           ? await SupabaseService.instance.client
                 .from('profiles')
                 .select('id, name, surname, street, suburb, city, province')
@@ -325,6 +327,12 @@ class _TrustedPartnersByCategoryPageState
   }
 
   Future<void> _openPartnerChat(Map<String, dynamic> partner) async {
+    if (SupabaseService.instance.getCurrentUser() == null) {
+      await Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const WelcomePage()),
+      );
+      return;
+    }
     try {
       final user = SupabaseService.instance.getCurrentUser();
       if (user == null) throw Exception('Not authenticated');

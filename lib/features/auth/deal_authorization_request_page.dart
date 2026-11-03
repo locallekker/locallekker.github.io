@@ -6,6 +6,7 @@ import '../../services/deal_authorization_service.dart';
 import '../../services/supabase_service.dart';
 import '../../services/admin_engagement_service.dart';
 import '../../services/in_app_payment_availability_service.dart';
+import '../../services/member_activation_service.dart';
 
 class DealAuthorizationRequestPage extends StatefulWidget {
   final Map<String, dynamic> deal;
@@ -125,14 +126,10 @@ class _DealAuthorizationRequestPageState
   }
 
   Future<void> _submitRequest() async {
+    if (_isSubmitting) return;
     setState(() => _isSubmitting = true);
 
     try {
-      final user = SupabaseService.instance.getCurrentUser();
-      if (user == null) {
-        throw Exception('User not authenticated');
-      }
-
       final discount = Discount.fromJson(widget.deal);
 
       // Calculate amount based on whether it's weight-based or not
@@ -203,6 +200,15 @@ class _DealAuthorizationRequestPageState
         return;
       }
 
+      if (SupabaseService.instance.getCurrentUser() == null) {
+        await MemberActivationService().ensureCanRequestDeal(
+          context,
+          savings: appliedDiscountAmount ?? 0,
+          dealId: discount.id,
+        );
+        return;
+      }
+
       // Require explicit payment method selection
       if (_selectedPaymentMethod == null) {
         if (mounted) {
@@ -218,6 +224,18 @@ class _DealAuthorizationRequestPageState
         return;
       }
 
+      // Browse-free members: show the "complete subscription to save" popup
+      // with this deal's saving instead of submitting.
+      final canRequest = await MemberActivationService().ensureCanRequestDeal(
+        context,
+        savings: appliedDiscountAmount,
+      );
+      if (!canRequest) return;
+
+      final user = SupabaseService.instance.getCurrentUser();
+      if (user == null) {
+        throw Exception('Please sign in again to request this deal.');
+      }
       await _dealService.requestDealAuthorization(
         memberId: user.id,
         discountId: discount.id,

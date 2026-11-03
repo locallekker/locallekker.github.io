@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:logger/logger.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter/foundation.dart';
 import 'cache_service.dart';
+import 'guest_analytics_service.dart';
 import 'payment_status_service.dart';
 
 enum PasswordResetDelivery { otp }
@@ -46,6 +49,9 @@ class SupabaseService {
   }
 
   final Logger _logger = Logger();
+
+  String get businessCatalogueTable =>
+      getCurrentUser() == null ? 'guest_business_catalogue' : 'businesses';
 
   // In-memory cache of member terms acceptance keyed by userId. Set to true
   // immediately after a successful acceptMemberTerms RPC so subsequent
@@ -706,6 +712,7 @@ class SupabaseService {
             _logger.d(
               'SupabaseService: Refresh token: ${authState.session?.refreshToken != null ? "Present" : "Null"}',
             );
+            unawaited(GuestAnalyticsService().linkConversion());
             break;
           case AuthChangeEvent.signedOut:
             _logger.i('SupabaseService: User signed out');

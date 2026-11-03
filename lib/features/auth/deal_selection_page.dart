@@ -15,6 +15,7 @@ import '../../services/discount_service.dart';
 import '../../services/supabase_service.dart';
 import '../../services/admin_engagement_service.dart';
 import '../../services/in_app_payment_availability_service.dart';
+import '../../services/member_activation_service.dart';
 import '../../widgets/deal_image_preview.dart';
 import '../../widgets/website_redirect_overlay.dart';
 import '../admin/website_redirect_deal_dialog.dart';
@@ -3193,16 +3194,10 @@ class _BillDiscountDialogState extends State<BillDiscountDialog> {
                                 supabaseService.client.auth.currentUser;
 
                             if (currentUser == null) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('User not authenticated'),
-                                  behavior: SnackBarBehavior.floating,
-                                  margin: EdgeInsets.only(
-                                    bottom: 40,
-                                    left: 16,
-                                    right: 16,
-                                  ),
-                                ),
+                              await MemberActivationService().ensureCanRequestDeal(
+                                context,
+                                savings: discountAmount,
+                                dealId: widget.discount.id,
                               );
                               return;
                             }
@@ -3258,31 +3253,6 @@ class _BillDiscountDialogState extends State<BillDiscountDialog> {
                             // Calculate the final total and components
                             final totalAmount = _calculateTotal();
 
-                            // Calculate discount amount for tracking
-                            final totalExcluded = filteredExclusions
-                                .fold<double>(0.0, (sum, exclusion) {
-                                  final exclusionName =
-                                      exclusion['name'] as String;
-                                  final quantity =
-                                      _exclusionQuantities[exclusionName] ?? 0;
-                                  final amount = (exclusion['amount'] as num)
-                                      .toDouble();
-                                  return sum + (quantity * amount);
-                                });
-                            final billAfterExclusions =
-                                billAmount - totalExcluded;
-                            final billDiscountData =
-                                widget.discount.billDiscountData;
-                            double discountAmount = 0.0;
-                            if (billDiscountData?['isPercentage'] == true) {
-                              final percentage = widget.discount.percentage;
-                              discountAmount =
-                                  billAfterExclusions * (percentage / 100);
-                            } else {
-                              discountAmount =
-                                  widget.discount.fixedAmount ?? 0.0;
-                            }
-
                             // Calculate tip amount
                             double tipAmount = 0.0;
                             if (_addTip) {
@@ -3298,6 +3268,13 @@ class _BillDiscountDialogState extends State<BillDiscountDialog> {
                             }
 
                             // Create the authorization request with detailed bill data
+                            final canRequest = await MemberActivationService()
+                                .ensureCanRequestDeal(
+                                  context,
+                                  savings: discountAmount,
+                                );
+                            if (!canRequest) return;
+
                             await supabaseService.client
                                 .from('deal_authorizations')
                                 .insert({
