@@ -41,6 +41,43 @@ jobs:
           flutter pub get
           flutter build web --release --base-href /
 
+      # Flutter copies web/privacy.html into build/web, then registers every
+      # output file with the service worker. The worker only rewrites "/" and
+      # hash routes to index.html, but it still cache-handles any file it
+      # knows about. Leave the privacy URLs to the network so a cached app
+      # shell can never answer them.
+      - name: Bypass the Flutter service worker for the privacy policy
+        run: |
+          python3 << 'PY'
+          import re
+          from pathlib import Path
+
+          path = Path("build/web/flutter_service_worker.js")
+          text = path.read_text(encoding="utf-8")
+          pattern = re.compile(r'self\.addEventListener\(\s*"fetch"\s*,\s*\(event\)\s*=>\s*\{')
+          match = pattern.search(text)
+          if match is None or pattern.search(text, match.end()) is not None:
+              raise SystemExit(
+                  "Expected exactly one fetch handler in flutter_service_worker.js"
+              )
+          bypass = """
+            var privacyOrigin = self.location.origin;
+            var privacyPath = event.request.url.split("?")[0].split("#")[0];
+            if (
+              privacyPath === privacyOrigin + "/privacy.html" ||
+              privacyPath === privacyOrigin + "/privacy" ||
+              privacyPath === privacyOrigin + "/privacy/" ||
+              privacyPath === privacyOrigin + "/privacy/index.html"
+            ) {
+              return;
+            }
+          """
+          updated = text[: match.end()] + bypass + text[match.end() :]
+          path.write_text(updated, encoding="utf-8")
+          if "privacyOrigin + \"/privacy.html\"" not in updated:
+              raise SystemExit("Privacy-policy service worker bypass was not written")
+          PY
+
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
