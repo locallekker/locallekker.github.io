@@ -10,7 +10,7 @@ By using Local Lekker, you agree to the collection and use of information in acc
 
 ## Contact Information
 
-- **Email**: support@locallekker.co.za
+- **Email**: locallekkerclub@gmail.com
 - **Company**: Local Lekker
 - **Location**: South Africa
 
@@ -91,7 +91,7 @@ You have the right to:
 
 ### How to Exercise Your Rights
 
-Contact us at support@locallekker.co.za to:
+Contact us at locallekkerclub@gmail.com to:
 - Access your data
 - Update your information
 - Delete your account
@@ -171,7 +171,7 @@ If you are a California resident, you have additional rights under the Californi
 
 For privacy-related questions, concerns, or complaints:
 
-**Email**: support@locallekker.co.za  
+**Email**: locallekkerclub@gmail.com
 **Response Time**: We aim to respond within 48 hours
 
 For POPIA complaints in South Africa:
