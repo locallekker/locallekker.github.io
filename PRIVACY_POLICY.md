@@ -1,6 +1,6 @@
 # Privacy Policy for Local Lekker
 
-**Last Updated: January 18, 2026**
+**Last Updated: November 7, 2026**
 
 ## Introduction
 
@@ -21,7 +21,7 @@ By using Local Lekker, you agree to the collection and use of information in acc
 When you register and use our App, we may collect:
 
 - **Account Information**: Name, surname, email address, phone number, password
-- **Payment Information**: Payment card details, transaction history (processed securely via Paystack)
+- **Payment Information**: Payment and transaction details. Card details are handled securely by Paystack and are not stored by us.
 - **Business Information**: For business partners - business name, address, contact details, banking information
 - **Profile Data**: Date of birth, gender, ethnicity (optional demographic information)
 
@@ -34,10 +34,11 @@ When you register and use our App, we may collect:
 
 ### 3. Camera and Photo Library
 
-- **Camera Access**: Used for QR code scanning to process payments at partner businesses
-- **Photo Library**: May be used to select business logos (business partners only)
+- **Camera Access**: Used for QR code scanning and capturing receipt images
+- **Photo Library**: May be used to select receipt images and business logos
+- **Receipt Data**: Receipt images and information extracted from receipts may be stored to provide receipt-processing and transaction-history features
 
-**We do NOT** collect or store receipt images, facial recognition data, or use the camera for surveillance purposes.
+**We do NOT** collect facial recognition data or use the camera for surveillance purposes.
 
 ## How We Use Your Information
 
@@ -114,6 +115,7 @@ Our App integrates with:
 
 1. **Paystack** - Payment processing ([Paystack Privacy Policy](https://paystack.com/privacy))
 2. **Supabase** - Database and authentication ([Supabase Privacy Policy](https://supabase.com/privacy))
+3. **Firebase Cloud Messaging** - Push-notification delivery ([Google Privacy Policy](https://policies.google.com/privacy))
 
 These services have their own privacy policies. We recommend reviewing them.
 
@@ -187,4 +189,4 @@ For POPIA complaints in South Africa:
 
 ---
 
-*This privacy policy was last updated on January 18, 2026. By continuing to use Local Lekker, you acknowledge that you have read and understood this policy.*
+*This privacy policy was last updated on November 7, 2026. By continuing to use Local Lekker, you acknowledge that you have read and understood this policy.*
