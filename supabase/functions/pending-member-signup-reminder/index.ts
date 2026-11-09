@@ -72,7 +72,7 @@ ${appOpenUrl}
 
 If you need help, contact support@locallekker.co.za.
 
-To stop receiving signup reminders, opt out here:
+To stop receiving marketing emails, including signup reminders, opt out here:
 ${optOutUrl}
 
 Local Lekker
@@ -138,7 +138,7 @@ function buildHtmlEmail(memberName: string, appOpenUrl: string, optOutUrl: strin
 <p>Complete your subscription to activate your membership and start accessing local deals.</p>
 <p><a href="${escapeHtml(appOpenUrl)}" style="display:inline-block;background:#001489;color:#fff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold">Open Local Lekker</a></p>
 <p>If you need help, contact <a href="mailto:support@locallekker.co.za">support@locallekker.co.za</a>.</p>
-<p><a href="${escapeHtml(optOutUrl)}" style="display:inline-block;border:1px solid #526079;color:#526079;text-decoration:none;padding:9px 16px;border-radius:6px">Opt out of signup reminders</a></p>
+<p><a href="${escapeHtml(optOutUrl)}" style="display:inline-block;border:1px solid #526079;color:#526079;text-decoration:none;padding:9px 16px;border-radius:6px">Opt out of marketing emails</a></p>
 <p>Local Lekker</p>
 </body>
 </html>`

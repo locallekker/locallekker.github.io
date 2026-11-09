@@ -7,6 +7,8 @@ import 'dart:async';
 import '../../services/supabase_service.dart';
 import '../../services/navigation_service.dart';
 import '../../services/promotion_campaign_service.dart';
+import '../member/member_terms_content.dart';
+import '../member/member_terms_page.dart';
 import '../payments/payments_feature.dart';
 import 'widgets/otp_verification_dialog.dart';
 import 'welcome_page.dart';
@@ -34,6 +36,9 @@ class _MembersSignupPageState extends State<MembersSignupPage> {
 
   DateTime? _selectedDate;
   bool _showDobValidationError = false;
+  bool _termsAccepted = false;
+  bool _marketingEmailConsent = false;
+  bool _marketingWhatsappConsent = false;
   String? _selectedGender;
   String? _selectedEthnicity;
   String? _selectedProvince;
@@ -1048,6 +1053,64 @@ class _MembersSignupPageState extends State<MembersSignupPage> {
                     ? 'Please enter your contact number'
                     : null,
               ),
+              const SizedBox(height: 16),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                value: _termsAccepted,
+                onChanged: (value) =>
+                    setState(() => _termsAccepted = value ?? false),
+                title: const Text(
+                  'I have read and agree to the Local Lekker Club Terms and Conditions and acknowledge the Privacy Notice.',
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(left: 12),
+                child: Wrap(
+                  spacing: 8,
+                  children: [
+                    TextButton(
+                      onPressed: _openTermsPreview,
+                      child: const Text('Read Terms and Conditions'),
+                    ),
+                    TextButton(
+                      onPressed: _showPrivacyNotice,
+                      child: const Text('Read Privacy Notice'),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 28),
+              const Text(
+                'Optional: Marketing Communications',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'I would like to receive news about local deals, special offers, new Trusted Partners and membership promotions from Local Lekker Club via:',
+              ),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                value: _marketingEmailConsent,
+                onChanged: (value) => setState(
+                  () => _marketingEmailConsent = value ?? false,
+                ),
+                title: const Text('Email'),
+              ),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                value: _marketingWhatsappConsent,
+                onChanged: (value) => setState(
+                  () => _marketingWhatsappConsent = value ?? false,
+                ),
+                title: const Text('WhatsApp'),
+              ),
+              const Padding(
+                padding: EdgeInsets.only(left: 12, bottom: 8),
+                child: Text('I understand that I can unsubscribe at any time.'),
+              ),
               const SizedBox(height: 20),
               ElevatedButton(
                 onPressed: _createAccount,
@@ -1262,6 +1325,9 @@ class _MembersSignupPageState extends State<MembersSignupPage> {
     }
     _selectedGender = profile['gender'] as String?;
     _selectedEthnicity = profile['ethnicity'] as String?;
+    _marketingEmailConsent = profile['marketing_email_consent'] == true;
+    _marketingWhatsappConsent =
+      profile['marketing_whatsapp_consent'] == true;
 
     final dob = profile['date_of_birth'] as String?;
     if (dob != null) {
@@ -1535,6 +1601,15 @@ class _MembersSignupPageState extends State<MembersSignupPage> {
       return;
     }
 
+    if (!_termsAccepted) {
+      _scaffoldMessenger.showSnackBar(
+        const SnackBar(
+          content: Text('Please accept the Terms and Conditions to continue.'),
+        ),
+      );
+      return;
+    }
+
     final hasAllRequiredFields = _hasAllRequiredFields();
     final isFormValid = _formKey.currentState?.validate() ?? false;
 
@@ -1570,6 +1645,34 @@ class _MembersSignupPageState extends State<MembersSignupPage> {
     } else {
       _logger.w('Form validation failed');
     }
+  }
+
+  Future<void> _openTermsPreview() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => const MemberTermsPage(readOnly: true),
+      ),
+    );
+  }
+
+  void _showPrivacyNotice() {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Privacy Notice'),
+        content: const SingleChildScrollView(
+          child: Text(
+            'Local Lekker processes personal information to create and manage accounts, process subscriptions and payments, verify memberships and redemptions, provide support, maintain security, improve services and meet legal obligations. Information may be shared with authorised service providers where needed to operate the platform. We do not sell members\' personal information. You may request access to, correction of or deletion of your information by contacting locallekkerclub@gmail.com, subject to applicable legal requirements.',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _showOtpVerificationDialog() {
@@ -1643,6 +1746,7 @@ class _MembersSignupPageState extends State<MembersSignupPage> {
           }
 
           // Create user profile after successful verification
+          var signupConsentsRecorded = false;
           try {
             await SupabaseService.instance.createUserProfile(
               userId: uid,
@@ -1661,6 +1765,40 @@ class _MembersSignupPageState extends State<MembersSignupPage> {
               },
             );
             _logger.i('User profile created successfully');
+
+            final termsSaved = await SupabaseService.instance.acceptMemberTerms(
+              userId: uid,
+              version: MemberTermsContent.termsVersion,
+            );
+            if (!termsSaved) {
+              _scaffoldMessenger.showSnackBar(
+                const SnackBar(
+                  content: Text(
+                    'Could not save your terms acceptance. Please try again.',
+                  ),
+                ),
+              );
+              return;
+            }
+
+            final preferencesSaved = await SupabaseService.instance
+                .saveMemberMarketingPreferences(
+                  emailConsent: _marketingEmailConsent,
+                  whatsappConsent: _marketingWhatsappConsent,
+                  wording: MemberTermsContent.marketingConsentWording,
+                  version: MemberTermsContent.marketingConsentVersion,
+                );
+            if (!preferencesSaved) {
+              _scaffoldMessenger.showSnackBar(
+                const SnackBar(
+                  content: Text(
+                    'Could not save your communication preferences. Please try again.',
+                  ),
+                ),
+              );
+              return;
+            }
+            signupConsentsRecorded = true;
 
             // Membership record is now created by the createUserProfile function
 
@@ -1682,7 +1820,7 @@ class _MembersSignupPageState extends State<MembersSignupPage> {
                   .eq('id', uid)
                   .maybeSingle();
 
-              if (existingProfile != null) {
+              if (existingProfile != null && signupConsentsRecorded) {
                 _logger.w(
                   'Profile write failed but profile exists for $uid. Continuing to payment flow.',
                 );
@@ -1700,6 +1838,17 @@ class _MembersSignupPageState extends State<MembersSignupPage> {
                 setState(() {
                   _shouldNavigateToPayment = true;
                 });
+                return;
+              } else if (existingProfile != null) {
+                _scaffoldMessenger.showSnackBar(
+                  const SnackBar(
+                    content: Text(
+                      'Your account exists, but we could not save your terms and communication preferences. Please try again.',
+                    ),
+                    backgroundColor: Colors.red,
+                    duration: Duration(seconds: 4),
+                  ),
+                );
                 return;
               }
             } catch (profileLookupError) {

@@ -3,6 +3,7 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'package:logger/logger.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter/foundation.dart';
+import '../features/member/member_terms_content.dart';
 import 'cache_service.dart';
 import 'payment_status_service.dart';
 
@@ -36,8 +37,8 @@ class SupabaseService {
 
   final Logger _logger = Logger();
 
-  // In-memory cache of member terms acceptance keyed by userId. Set to true
-  // immediately after a successful acceptMemberTerms RPC so subsequent
+  // In-memory cache of member terms acceptance keyed by userId and version.
+  // Set immediately after a successful acceptMemberTerms RPC so subsequent
   // navigation checks in the same session can trust the just-written value
   // even if the follow-up SELECT is blocked by RLS, hits replica lag, or the
   // column read fails for any other transient reason. Prevents the loop where
@@ -2059,7 +2060,7 @@ class SupabaseService {
       final profile = await client
           .from('profiles')
           .select(
-            'id, email, name, surname, street, suburb, city, province, contact, gender, ethnicity, date_of_birth, is_deactivated, subscription, role, is_tp_member, profile_photo_url',
+            'id, email, name, surname, street, suburb, city, province, contact, gender, ethnicity, date_of_birth, is_deactivated, subscription, role, is_tp_member, profile_photo_url, marketing_email_consent, marketing_whatsapp_consent',
           )
           .eq('email', normalizedEmail)
           .maybeSingle();
@@ -2240,11 +2241,34 @@ class SupabaseService {
       // Cache acceptance for the rest of this session so the immediate
       // navigation gate (hasMemberAcceptedTerms) cannot bounce the user back
       // to the terms page if the follow-up SELECT is blocked by RLS or fails.
-      _memberTermsAcceptedCache.add(userId);
+      _memberTermsAcceptedCache.add('$userId:$version');
       await syncVerificationStatus(userId);
       return true;
     } catch (e) {
       _logger.e('acceptMemberTerms error: $e');
+      return false;
+    }
+  }
+
+  Future<bool> saveMemberMarketingPreferences({
+    required bool emailConsent,
+    required bool whatsappConsent,
+    required String wording,
+    required String version,
+  }) async {
+    try {
+      final result = await client.rpc(
+        'save_member_marketing_preferences',
+        params: {
+          'p_email_consent': emailConsent,
+          'p_whatsapp_consent': whatsappConsent,
+          'p_consent_wording': wording,
+          'p_consent_version': version,
+        },
+      );
+      return result == true;
+    } catch (e) {
+      _logger.e('saveMemberMarketingPreferences error: $e');
       return false;
     }
   }
@@ -2256,33 +2280,41 @@ class SupabaseService {
   ///    the single source of truth right after the user accepts, and prevents
   ///    the post-save loop when DB reads are blocked by RLS or transiently
   ///    fail.
-  /// 2. SECURITY DEFINER RPC `member_terms_accepted_status` (bypasses RLS).
+  /// 2. SECURITY DEFINER RPC checks acceptance of the current terms version.
   /// 3. Direct table SELECT (legacy / fallback when the RPC isn't deployed).
   Future<bool> hasMemberAcceptedTerms(
     String userId, {
     Map<String, dynamic>? profile,
   }) async {
-    if (_memberTermsAcceptedCache.contains(userId)) {
+    final cacheKey = '$userId:${MemberTermsContent.termsVersion}';
+    if (_memberTermsAcceptedCache.contains(cacheKey)) {
       return true;
     }
     // Reuse an already-loaded profile to avoid a redundant DB read. The
     // `member_terms_accepted` column on profiles is the source of truth
     // (written by acceptMemberTerms), so when the caller has just fetched the
     // full profile we can resolve acceptance without another round-trip.
-    if (profile != null && profile.containsKey('member_terms_accepted')) {
-      final accepted = profile['member_terms_accepted'] == true;
+    if (profile != null &&
+        profile.containsKey('member_terms_accepted') &&
+        profile.containsKey('member_terms_version')) {
+      final accepted =
+          profile['member_terms_accepted'] == true &&
+          profile['member_terms_version'] == MemberTermsContent.termsVersion;
       if (accepted) {
-        _memberTermsAcceptedCache.add(userId);
+        _memberTermsAcceptedCache.add(cacheKey);
       }
       return accepted;
     }
     try {
       final rpcResult = await client.rpc(
-        'member_terms_accepted_status',
-        params: {'p_user_id': userId},
+        'member_terms_current_status',
+        params: {
+          'p_user_id': userId,
+          'p_version': MemberTermsContent.termsVersion,
+        },
       );
       if (rpcResult == true) {
-        _memberTermsAcceptedCache.add(userId);
+        _memberTermsAcceptedCache.add(cacheKey);
         return true;
       }
       if (rpcResult == false) {
@@ -2296,7 +2328,7 @@ class SupabaseService {
     try {
       final res = await client
           .from('profiles')
-          .select('member_terms_accepted')
+          .select('member_terms_accepted, member_terms_version')
           .eq('id', userId)
           .maybeSingle();
 
@@ -2305,12 +2337,14 @@ class SupabaseService {
         return false;
       }
       final value = res['member_terms_accepted'];
-      final accepted = value == true; // only explicit true counts
+      final accepted =
+          value == true &&
+          res['member_terms_version'] == MemberTermsContent.termsVersion;
       _logger.d(
-        'hasMemberAcceptedTerms: userId=$userId accepted=$accepted raw=$value',
+        'hasMemberAcceptedTerms: userId=$userId accepted=$accepted raw=$value version=${res['member_terms_version']}',
       );
       if (accepted) {
-        _memberTermsAcceptedCache.add(userId);
+        _memberTermsAcceptedCache.add(cacheKey);
       }
       return accepted;
     } catch (e) {
