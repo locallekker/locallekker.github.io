@@ -6,7 +6,12 @@
 // RECOVERY: Acts as a safety net when the app is killed mid-payment.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { reconcileBilling } from '../_shared/subscription-billing.ts'
+import { SupabaseBillingStore } from '../_shared/subscription-billing-store.ts'
+import { PaystackBillingProvider } from '../_shared/subscription-billing-provider.ts'
+import { SupabaseDealPaymentStore } from '../_shared/deal-payment-store.ts'
+import { reconcileDealPayment } from '../_shared/deal-payments.ts'
 
 const corsHeaders = {
     'Access-Control-Allow-Origin': '*',
@@ -117,6 +122,26 @@ serve(async (req) => {
             })
         }
 
+        const billingReference = data.reference ?? data.transaction?.reference
+        if (typeof billingReference === 'string' && billingReference.startsWith('ll-deal-')) {
+            const store = new SupabaseDealPaymentStore(supabase)
+            const payment = await store.find(billingReference)
+            if (!payment) throw new Error('Deal payment reference was not found')
+            const result = await reconcileDealPayment(store, new PaystackBillingProvider(paystackSecretKey), payment)
+            if (result.state === 'unknown') throw new Error('Provider verification unavailable; retry webhook')
+            return new Response(JSON.stringify({ status: result.state }), {
+                headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            })
+        }
+        if (typeof billingReference === 'string' && billingReference.startsWith('ll-sub-')) {
+            const store = new SupabaseBillingStore(supabase)
+            const cycle = await store.find(billingReference)
+            if (!cycle) throw new Error('Ledger payment reference was not found')
+            const result = await reconcileBilling(store, new PaystackBillingProvider(paystackSecretKey), cycle)
+            if (result.state === 'unknown') throw new Error('Provider payment verification unavailable; retry webhook')
+            return new Response(JSON.stringify({ status: result.state }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+        }
+
         switch (event) {
             case 'charge.success':
                 await handleChargeSuccess(supabase, data)
@@ -126,6 +151,16 @@ serve(async (req) => {
                 break
             case 'subscription.charge':
                 await handleSubscriptionCharge(supabase, data)
+                break
+            case 'invoice.update':
+                if (data.paid === true && typeof data.transaction?.reference === 'string') {
+                    await handleSubscriptionCharge(supabase, {
+                        ...data.transaction,
+                        status: 'success',
+                        amount: data.transaction.amount ?? data.amount,
+                        subscription: data.subscription,
+                    })
+                }
                 break
             case 'invoice.payment_failed':
                 await handlePaymentFailed(supabase, data)
@@ -147,7 +182,7 @@ serve(async (req) => {
         })
     } catch (error) {
         console.error('Webhook error:', error)
-        return new Response(JSON.stringify({ error: error.message }), {
+        return new Response(JSON.stringify({ error: error instanceof Error ? error.message : 'Webhook failed' }), {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
             status: 400,
         })
@@ -169,6 +204,17 @@ async function handleChargeSuccess(supabase: any, data: any) {
     if (!userId) {
         console.warn('charge.success: no user_id in metadata, skipping')
         return
+    }
+
+    if (['subscription', 'subscription_renewal', 'promotion_intro'].includes(paymentType)) {
+        const { data: sub, error } = await supabase.from('subscriptions')
+            .select('billing_owner').eq('user_id', userId)
+            .order('created_at', { ascending: false }).limit(1).maybeSingle()
+        if (error) throw error
+        if (sub?.billing_owner === 'server') {
+            console.error(`Unmatched legacy membership payment requires review ref=${reference}`)
+            throw new Error('Legacy payment for server-owned membership requires reconciliation')
+        }
     }
 
     // â”€â”€ Subscription payment â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -512,201 +558,28 @@ async function recoverIntroCampaignPayment(
 // before _handlePaymentSuccess ran, the deal stays in 'approved' state.
 // This webhook marks it 'completed' so the member isn't charged but stuck.
 async function recoverDealPayment(
-    supabase: any,
+    supabase: SupabaseClient,
     userId: string,
     reference: string,
-    amount: number,
-    metadata: any,
+    _amount: number,
+    metadata: Record<string, unknown>,
 ) {
-    const dealAuthId = metadata.deal_authorization_id
-    console.log(`Recovering deal payment user=${userId} deal=${dealAuthId ?? 'unknown'} ref=${reference}`)
-
-    let deal: any = null
-
-    // Strategy 1: Use deal_authorization_id from metadata (preferred)
-    if (dealAuthId) {
-        const { data } = await supabase
-            .from('deal_authorizations')
-            .select('id, status, payment_completed_at')
-            .eq('id', dealAuthId)
-            .single()
-        deal = data
+    const transaction = await new PaystackBillingProvider(
+        (Deno.env.get('PAYSTACK_SECRET_KEY') ?? '').trim(),
+    ).verify(reference)
+    if (!transaction || transaction.status !== 'success' || transaction.reference !== reference ||
+        transaction.metadata?.user_id !== userId ||
+        transaction.metadata?.payment_type !== 'one_time_payment' ||
+        transaction.metadata?.deal_authorization_id !== metadata.deal_authorization_id ||
+        typeof metadata.deal_authorization_id !== 'string') {
+        throw new Error('A verified payment for a specific deal is required')
     }
-
-    // Strategy 2: Find the most recent non-completed deal for this user
-    if (!deal) {
-        const { data } = await supabase
-            .from('deal_authorizations')
-            .select('id, status, payment_completed_at')
-            .eq('member_id', userId)
-            .in('status', ['approved', 'pending_payment'])
-            .is('payment_completed_at', null)
-            .order('created_at', { ascending: false })
-            .limit(1)
-            .single()
-        deal = data
-    }
-
-    if (!deal) {
-        console.log('No pending deal found for this payment (app probably handled it)')
-        return
-    }
-
-    // Already completed? Skip (idempotent)
-    if (deal.status === 'completed' && deal.payment_completed_at) {
-        console.log(`Deal ${deal.id} already completed, skipping`)
-        return
-    }
-
-    const now = new Date().toISOString()
-
-    // Mark deal as completed
-    const { error } = await supabase
-        .from('deal_authorizations')
-        .update({
-            status: 'completed',
-            payment_completed_at: now,
-            payment_reference: reference,
-            updated_at: now,
-        })
-        .eq('id', deal.id)
-
-    if (error) {
-        console.error(`Failed to complete deal ${deal.id}:`, error.message)
-        return
-    }
-
-    // â”€â”€ Fetch deal details for receipt generation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    const { data: dealFull } = await supabase
-        .from('deal_authorizations')
-        .select(`
-            *,
-            trusted_partner_discounts(*, businesses(*)),
-            profiles(*)
-        `)
-        .eq('id', deal.id)
-        .single()
-
-    const discountData = dealFull?.trusted_partner_discounts
-    const businessData = discountData?.businesses
-    const memberData = dealFull?.profiles
-    const businessId = discountData?.business_id ?? dealFull?.business_id ?? null
-    const trustedPartnerId = discountData?.trusted_partner_id ?? businessData?.owner_member_id ?? null
-    const memberName = [memberData?.name, memberData?.surname].filter(Boolean).join(' ') || 'Member'
-    const businessName = businessData?.name ?? 'Business'
-    const dealName = discountData?.name ?? 'Deal'
-    const dealAmount = (dealFull?.amount ?? amount / 100) as number
-
-    // â”€â”€ Generate receipt number â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    let receiptNumber = `RCP-${Date.now()}`
-    if (businessId) {
-        try {
-            const { data: rpcResult } = await supabase.rpc('get_next_receipt_number', {
-                p_business_id: businessId,
-            })
-            if (rpcResult) receiptNumber = rpcResult as string
-        } catch (e) {
-            console.warn('get_next_receipt_number failed, using fallback:', e)
-        }
-    }
-
-    const qrCode = `RECEIPT:${deal.id}:${receiptNumber}`
-    const transactionDate = new Date().toISOString()
-
-    // â”€â”€ Insert virtual_receipts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    if (businessId) {
-        const receiptData = {
-            receipt_number: receiptNumber,
-            deal_authorization_id: deal.id,
-            business_name: businessName,
-            business_id: businessId,
-            member_name: memberName,
-            member_email: memberData?.email ?? 'N/A',
-            discount_name: dealName,
-            amount: dealAmount,
-            payment_method: 'in_app',
-            transaction_date: transactionDate,
-            status: 'completed',
-        }
-
-        const { error: vrError } = await supabase
-            .from('virtual_receipts')
-            .insert({
-                deal_authorization_id: deal.id,
-                receipt_number: receiptNumber,
-                receipt_data: receiptData,
-                qr_code: qrCode,
-            })
-
-        if (vrError) {
-            console.error('Failed to insert virtual_receipt (webhook recovery):', vrError.message)
-        } else {
-            console.log(`virtual_receipt created for deal ${deal.id}: ${receiptNumber}`)
-        }
-
-        // â”€â”€ Insert deal_receipts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        const { error: drError } = await supabase
-            .from('deal_receipts')
-            .insert({
-                member_id: memberData?.id ?? userId,
-                trusted_partner_id: trustedPartnerId,
-                business_id: businessId,
-                deal_authorization_id: deal.id,
-                receipt_number: receiptNumber,
-                amount: dealAmount,
-                business_name: businessName,
-                discount_name: dealName,
-                member_name: memberName,
-                member_email: memberData?.email,
-                payment_method: 'in_app',
-            })
-
-        if (drError) {
-            console.error('Failed to insert deal_receipt (webhook recovery):', drError.message)
-        } else {
-            console.log(`deal_receipt created for deal ${deal.id}: ${receiptNumber}`)
-        }
-    }
-
-    // â”€â”€ Notify member â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    await supabase.from('notifications').insert({
-        user_id: userId,
-        title: 'Payment Confirmed',
-        message: `Your payment of R${dealAmount.toFixed(2)} to ${businessName} for ${dealName} was confirmed. Receipt #${receiptNumber} generated.`,
-        type: 'payment_success',
-        is_read: false,
-        data: {
-            deal_authorization_id: deal.id,
-            reference,
-            amount: dealAmount,
-            receipt_number: receiptNumber,
-            business_name: businessName,
-            source: 'webhook',
-        },
+    const { error } = await supabase.rpc('finalise_deal_payment', {
+        p_deal_id: metadata.deal_authorization_id, p_user_id: userId, p_reference: reference,
+        p_transaction_id: String(transaction.id), p_amount_cents: transaction.amount,
+        p_currency: transaction.currency, p_paid_at: transaction.paid_at,
     })
-
-    // â”€â”€ Notify trusted partner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    if (trustedPartnerId) {
-        await supabase.from('notifications').insert({
-            user_id: trustedPartnerId,
-            title: 'ðŸ’° Payment Received',
-            message: `${memberName} paid R${dealAmount.toFixed(2)} for ${dealName}. Receipt #${receiptNumber} generated.`,
-            type: 'payment_received',
-            is_read: false,
-            data: {
-                deal_authorization_id: deal.id,
-                member_id: userId,
-                member_name: memberName,
-                deal_name: dealName,
-                amount: dealAmount,
-                receipt_number: receiptNumber,
-                business_name: businessName,
-                source: 'webhook',
-            },
-        })
-    }
-
-    console.log(`Deal ${deal.id} recovered and marked completed, receipt: ${receiptNumber}`)
+    if (error) throw error
 }
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -758,13 +631,22 @@ async function handleSubscriptionCreate(supabase: any, data: any) {
     // Find the user's most recent subscription and save the Paystack subscription code
     const { data: existingSub } = await supabase
         .from('subscriptions')
-        .select('id, status, auto_renew, paystack_subscription_code, paystack_subscription_created_at, cancellation_requested_at')
+        .select('id, status, auto_renew, billing_owner, paystack_subscription_code, paystack_subscription_created_at, cancellation_requested_at')
         .eq('user_id', userId)
         .order('created_at', { ascending: false })
         .limit(1)
         .single()
 
     if (existingSub) {
+        if (existingSub.billing_owner === 'server') {
+            const { error } = await supabase.from('subscriptions').update({
+                billing_owner: 'migration_pending',
+                paystack_subscription_code: subscriptionCode,
+            }).eq('id', existingSub.id)
+            if (error) throw error
+            console.error('Unexpected provider subscription: paused server billing pending reconciliation')
+            return
+        }
         const cancellationRequestedAt = existingSub.cancellation_requested_at
         const providerCreatedAt = data.createdAt ?? data.created_at ?? null
         if (
@@ -948,6 +830,7 @@ async function handlePaymentFailed(supabase: any, data: any) {
     })
 
     console.log(`Payment failed handled for ${userId}`)
+}
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     async function handleSubscriptionDisable(supabase: any, data: any) {
         const subscriptionCode = data.subscription_code
@@ -1103,4 +986,3 @@ async function handlePaymentFailed(supabase: any, data: any) {
             console.log(`Admin settlement failure alert sent to ${admins.length} admin(s)`)
         }
     }
-}

@@ -139,7 +139,9 @@ class _LoadingScreenState extends State<LoadingScreen>
         // Re-check mounted after the async gap
         if (!mounted) {
           if (kDebugMode) {
-            print('🎬 LoadingScreen: Auto-transition cancelled after await - not mounted');
+            print(
+              '🎬 LoadingScreen: Auto-transition cancelled after await - not mounted',
+            );
           }
           return;
         }
@@ -196,7 +198,9 @@ class _LoadingScreenState extends State<LoadingScreen>
         // Re-check mounted after the async gap
         if (!mounted) {
           if (kDebugMode) {
-            print('🎬 LoadingScreen: Default transition cancelled after await - not mounted');
+            print(
+              '🎬 LoadingScreen: Default transition cancelled after await - not mounted',
+            );
           }
           return;
         }
@@ -283,8 +287,8 @@ class _LoadingScreenState extends State<LoadingScreen>
                       return Transform.scale(
                         scale: _logoAnimation.value,
                         child: Container(
-                          width: 250, // Increased from 200 to 250
-                          height: 250, // Increased from 200 to 250
+                          width: 250,
+                          height: 250,
                           decoration: BoxDecoration(
                             color: Colors.white,
                             shape: BoxShape.circle,
@@ -301,10 +305,9 @@ class _LoadingScreenState extends State<LoadingScreen>
                               'assets/locallekker_logo.png',
                               fit: BoxFit.cover,
                               errorBuilder: (context, error, stackTrace) {
-                                // Fallback to icon if image fails to load
                                 return const Icon(
                                   Icons.restaurant,
-                                  size: 100, // Increased from 80 to 100
+                                  size: 100,
                                   color: Color(0xFF4CAF50),
                                 );
                               },

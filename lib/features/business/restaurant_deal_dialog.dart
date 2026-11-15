@@ -17,12 +17,14 @@ class RestaurantDealDialog extends StatefulWidget {
   final String trustedPartnerId;
   final Discount? existing;
   final String? lockedDealCategory;
+  final bool reviewMode;
 
   const RestaurantDealDialog({
     super.key,
     required this.trustedPartnerId,
     this.existing,
     this.lockedDealCategory,
+    this.reviewMode = false,
   });
 
   @override
@@ -145,7 +147,9 @@ class _RestaurantDealDialogState extends State<RestaurantDealDialog> {
             ? existing.dealCategory
             : kLocalEatsCategory);
 
-    final data = existing?.customData ?? const <String, dynamic>{};
+    final data = existing?.isRestaurantDeal == true
+        ? existing!.customData ?? const <String, dynamic>{}
+        : const <String, dynamic>{};
     _bogoPriceAtCheckout = data['pricing_mode'] == 'checkout';
     _birthdayReward = data['reward'] == 'percent' ? 'percent' : 'free_item';
     for (final fields in _fields.values) {
@@ -328,6 +332,30 @@ class _RestaurantDealDialogState extends State<RestaurantDealDialog> {
       return;
     }
 
+    if (widget.reviewMode) {
+      final headline = config.headline;
+      Navigator.of(context).pop(<String, dynamic>{
+        'name': title,
+        'description': _descriptionController.text.trim(),
+        'item_name': headline.length > 120 ? headline.substring(0, 120) : headline,
+        'item_price': 0,
+        'percentage': config.percentage,
+        'fixed_amount': null,
+        'deal_type': _type.key,
+        'custom_data': customData,
+        'requires_manual_price': false,
+        'is_weight_based': false,
+        'is_bill_discount': false,
+        'is_once_off': widget.existing?.isOnceOff ?? false,
+        'bill_discount_data': null,
+        'image_url': _existingImageUrl,
+        'schedule_data': schedule.toJson(),
+        'deal_category': _category,
+        'offers_delivery': widget.existing?.offersDelivery ?? false,
+      });
+      return;
+    }
+
     setState(() => _saving = true);
     try {
       var imageUrl = _existingImageUrl;
@@ -342,6 +370,7 @@ class _RestaurantDealDialogState extends State<RestaurantDealDialog> {
       if (_isEdit) {
         await service.updateDiscount(
           widget.existing!.id,
+          expectedTermsRevision: widget.existing!.termsRevision,
           name: title,
           description: description,
           itemName: itemName,
@@ -507,7 +536,7 @@ class _RestaurantDealDialogState extends State<RestaurantDealDialog> {
                       ),
               ),
               const SizedBox(height: 12),
-              OutlinedButton.icon(
+              if (!widget.reviewMode) OutlinedButton.icon(
                 onPressed: _saving ? null : _pickImage,
                 icon: const Icon(Icons.image),
                 label: Text(
@@ -523,7 +552,9 @@ class _RestaurantDealDialogState extends State<RestaurantDealDialog> {
       ),
       actions: [
         TextButton(
-          onPressed: _saving ? null : () => Navigator.of(context).pop(false),
+          onPressed: _saving
+              ? null
+              : () => Navigator.of(context).pop(widget.reviewMode ? null : false),
           child: const Text('Cancel'),
         ),
         ElevatedButton(

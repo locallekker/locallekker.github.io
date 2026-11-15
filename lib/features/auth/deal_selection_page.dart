@@ -510,6 +510,7 @@ class _DealSelectionPageState extends State<DealSelectionPage> {
         try {
           await DiscountService().updateDiscount(
             discount.id,
+            expectedTermsRevision: discount.termsRevision,
             name: result['name'],
             description: result['description'],
             itemName: result['itemName'],

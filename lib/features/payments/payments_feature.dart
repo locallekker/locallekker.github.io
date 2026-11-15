@@ -9,7 +9,6 @@ import 'package:local_lekker/features/auth/welcome_page.dart';
 import 'package:local_lekker/services/navigation_service.dart';
 import 'package:local_lekker/services/deep_link_service.dart';
 import 'package:local_lekker/services/promotion_campaign_service.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'dart:async';
 import 'package:local_lekker/features/payments/paystack_webview_page.dart';
 import 'package:flutter/foundation.dart';
@@ -24,6 +23,9 @@ class PaymentRequiredScreen extends StatefulWidget {
   /// Lets the member skip payment and keep browsing (browse-free model).
   final bool allowSkip;
 
+  /// Returns to the calling deal page for activation prompts opened in-app.
+  final bool popOnSkip;
+
   /// Rand saving of the deal the member tried to request, if any.
   final double? potentialSavings;
 
@@ -31,6 +33,7 @@ class PaymentRequiredScreen extends StatefulWidget {
     super.key,
     this.isReactivation = false,
     this.allowSkip = false,
+    this.popOnSkip = false,
     this.potentialSavings,
   });
 
@@ -229,7 +232,7 @@ class _PaymentRequiredScreenState extends State<PaymentRequiredScreen> {
 
   void _skipForNow() {
     final navigator = Navigator.of(context);
-    if (navigator.canPop()) {
+    if (widget.popOnSkip && navigator.canPop()) {
       navigator.pop();
       return;
     }
@@ -1221,18 +1224,6 @@ class _PaymentOptionsScreenState extends State<PaymentOptionsScreen> {
         return;
       }
 
-      // Development mode: immediately activate subscription and navigate home
-      if (dotenv.env['PAYSTACK_DEVELOPMENT_MODE'] == 'true') {
-        final ok = await SubscriptionService().processManualPayment(
-          userId: user.id,
-          planType: widget.selectedPlan,
-        );
-        if (mounted && ok) {
-          NavigationService().navigateToHomeAfterPayment(context);
-        }
-        return;
-      }
-
       // For saved payment methods, use existing authorization
       if (isSavedMethod) {
         if (kDebugMode) {
@@ -1432,21 +1423,6 @@ class _PaymentOptionsScreenState extends State<PaymentOptionsScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Offer metadata missing. Please try again.')),
         );
-      }
-      return;
-    }
-
-    if (dotenv.env['PAYSTACK_DEVELOPMENT_MODE'] == 'true') {
-      final ok = await SubscriptionService().activateIntroCampaignSubscription(
-        userId: user.id,
-        promotionId: promotionId,
-        participantId: participantId,
-        freeMonths: freeMonths,
-        initialChargeCents: initialChargeCents,
-        renewalChargeCents: renewalChargeCents,
-      );
-      if (mounted && ok) {
-        await NavigationService().navigateToHomeAfterPayment(context);
       }
       return;
     }

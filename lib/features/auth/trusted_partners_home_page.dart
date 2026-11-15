@@ -386,19 +386,11 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
       setState(() {
         final index = _discounts.indexWhere((d) => d.id == discount.id);
         if (index != -1) {
-          _discounts[index] = Discount(
-            id: discount.id,
-            trustedPartnerId: discount.trustedPartnerId,
-            name: discount.name,
-            description: discount.description,
-            itemName: discount.itemName,
-            itemPrice: discount.itemPrice,
-            percentage: discount.percentage,
-            fixedAmount: discount.fixedAmount,
-            isActive: !discount.isActive,
-            createdAt: discount.createdAt,
-            updatedAt: DateTime.now(),
-          );
+          _discounts[index] = Discount.fromJson({
+            ...discount.toJson(),
+            'is_active': !discount.isActive,
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          });
         }
       });
 

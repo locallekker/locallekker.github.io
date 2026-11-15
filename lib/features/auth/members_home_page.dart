@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:convert';
+import 'package:logger/logger.dart';
 import 'package:flutter/material.dart';
 import 'dart:io' show Platform;
 import 'package:image_picker/image_picker.dart';
@@ -8,12 +8,12 @@ import '../../services/subscription_service.dart';
 import '../../services/deal_approval_popup_service.dart';
 import '../../services/savings_service.dart';
 import '../../services/cache_service.dart';
-import '../../services/qr_code_service.dart';
+import '../../widgets/member_qr_code.dart';
+import '../../core/constants/deal_categories.dart';
 import '../../services/discount_service.dart';
 import '../../services/fresh_local_notice.dart';
 import '../../services/guest_analytics_service.dart';
 import '../../models/notification.dart';
-import '../../widgets/custom_qr_code.dart';
 import '../../widgets/savings_summary_card.dart';
 import '../payments/payments_feature.dart';
 import 'member_profile_page.dart';
@@ -41,6 +41,7 @@ import '../../widgets/age_verification_dialog.dart';
 import '../../widgets/member_category_banner_row.dart';
 import 'welcome_page.dart';
 import '../../widgets/guest_sign_in_banner.dart';
+import '../../widgets/loading_screen.dart';
 
 class MembersHomePage extends StatefulWidget {
   final bool hideAppBar;
@@ -111,7 +112,6 @@ class _MembersHomePageState extends State<MembersHomePage>
   bool _isTrustedPartner = false;
   bool _isUploadingProfilePhoto = false;
   bool _obscureSensitiveContent = false;
-  bool _isRotatingQr = false;
   DateTime? _lastApprovalSyncAt;
   bool _isResubscribingApprovals = false;
   final ScrollController _homeScrollController = ScrollController();
@@ -127,7 +127,6 @@ class _MembersHomePageState extends State<MembersHomePage>
   int _selectedNavIndex = 0;
   bool _showGuestBanner = true;
   bool get _isGuest => SupabaseService.instance.getCurrentUser() == null;
-  Timer? _qrRotationTimer;
   Timer? _countdownTimer;
   RealtimeChannel? _chatMessagesChannel;
 
@@ -135,6 +134,10 @@ class _MembersHomePageState extends State<MembersHomePage>
   String? _selectedProvince;
   String? _selectedCity;
   bool _isLoadingCities = true;
+  bool _isInitialHomeLoading = true;
+  bool _initialHomeLoadFailed = false;
+  int _initialHomeLoadAttempt = 0;
+  Timer? _homeLoadRetryTimer;
   bool _hasFreshLocalPartners = false;
   int _freshLocalNewDeals = 0;
   int _freshLocalPartnerCount = 0;
@@ -282,12 +285,10 @@ class _MembersHomePageState extends State<MembersHomePage>
   @override
   void initState() {
     super.initState();
+    unawaited(_loadInitialHome());
     if (_isGuest) {
       _isSavingsLoading = false;
       _isLoadingPendingPayments = false;
-      _loadTrustedPartnersCount();
-      _loadMemberCityProvince();
-      _loadFreshLocalAvailability();
       unawaited(GuestAnalyticsService().recordVisit());
       return;
     }
@@ -297,10 +298,7 @@ class _MembersHomePageState extends State<MembersHomePage>
     if (!usedSnapshot) {
       _loadUserData();
     }
-    _loadTrustedPartnersCount();
     _loadPendingPaymentsCount();
-    _loadMemberCityProvince();
-    _loadFreshLocalAvailability();
     _loadActivePromotions();
     _subscribeToApprovalNotifications();
     _loadUnreadChatCount();
@@ -314,8 +312,81 @@ class _MembersHomePageState extends State<MembersHomePage>
     } catch (_) {}
 
     _enableSecureScreenProtection();
-    _startQrRotation();
   }
+
+  static const _homeLoadCheckInterval = Duration(seconds: 5);
+  static const _homeLoadMinimumDisplay = Duration(milliseconds: 1800);
+  static const _homeLoadChecksBeforeRetryPrompt = 6;
+
+  /// Keeps the branded loading screen up until the dashboard data is ready,
+  /// checking every [_homeLoadCheckInterval]. Slow requests keep running, and
+  /// failed requests are retried automatically at the next check.
+  Future<void> _loadInitialHome() async {
+    final attempt = ++_initialHomeLoadAttempt;
+    _homeLoadRetryTimer?.cancel();
+    final logger = Logger();
+    final started = Stopwatch()..start();
+    final minimumDisplay = Future<void>.delayed(_homeLoadMinimumDisplay);
+    var checks = 0;
+    setState(() => _initialHomeLoadFailed = false);
+
+    while (_isCurrentHomeLoad(attempt)) {
+      final load = Future.wait<void>([
+        _loadTrustedPartnersCount(initialLoadAttempt: attempt),
+        () async {
+          await _loadMemberCityProvince(initialLoadAttempt: attempt);
+          if (!_isCurrentHomeLoad(attempt)) return;
+          await _loadFreshLocalAvailability(initialLoadAttempt: attempt);
+        }(),
+      ], eagerError: true);
+      // Prevent unhandled errors if this attempt is abandoned mid-flight.
+      unawaited(load.then((_) {}, onError: (_) {}));
+
+      try {
+        while (true) {
+          try {
+            await load.timeout(_homeLoadCheckInterval);
+            break;
+          } on TimeoutException {
+            if (!_isCurrentHomeLoad(attempt)) return;
+            checks++;
+            logger.i('Home catalogue still loading (${started.elapsed.inSeconds}s)');
+            if (checks >= _homeLoadChecksBeforeRetryPrompt &&
+                !_initialHomeLoadFailed) {
+              setState(() => _initialHomeLoadFailed = true);
+            }
+          }
+        }
+        await minimumDisplay;
+        if (!_isCurrentHomeLoad(attempt)) return;
+        logger.i('Home catalogue ready in ${started.elapsedMilliseconds}ms');
+        setState(() {
+          _initialHomeLoadFailed = false;
+          _isInitialHomeLoading = false;
+        });
+        return;
+      } catch (error, stackTrace) {
+        logger.e(
+          'Failed to prepare the member home catalogue; checking again shortly',
+          error: error,
+          stackTrace: stackTrace,
+        );
+        if (!_isCurrentHomeLoad(attempt)) return;
+        checks++;
+        if (checks >= _homeLoadChecksBeforeRetryPrompt &&
+            !_initialHomeLoadFailed) {
+          setState(() => _initialHomeLoadFailed = true);
+        }
+        // Cancelled by dispose or a manual retry, which ends this loop.
+        final wake = Completer<void>();
+        _homeLoadRetryTimer = Timer(_homeLoadCheckInterval, wake.complete);
+        await wake.future;
+      }
+    }
+  }
+
+  bool _isCurrentHomeLoad(int? attempt) =>
+      mounted && (attempt == null || attempt == _initialHomeLoadAttempt);
 
   Future<void> _pickAndSaveProfilePhoto() async {
     if (_isUploadingProfilePhoto) return;
@@ -566,77 +637,6 @@ class _MembersHomePageState extends State<MembersHomePage>
     }
   }
 
-  void _startQrRotation() {
-    _qrRotationTimer?.cancel();
-    _qrRotationTimer = Timer.periodic(
-      const Duration(seconds: 30),
-      (_) => _rotateQrCodeIfNeeded(),
-    );
-    unawaited(_rotateQrCodeIfNeeded(force: true));
-  }
-
-  Future<void> _rotateQrCodeIfNeeded({bool force = false}) async {
-    if (_isRotatingQr || _obscureSensitiveContent) {
-      return;
-    }
-
-    final user = SupabaseService.instance.getCurrentUser();
-    if (user == null) {
-      return;
-    }
-
-    final hasActiveQr = _userQrData?['is_active'] == true;
-    if (!hasActiveQr) {
-      return;
-    }
-
-    final existingQr = _userQrData?['qr_code'] as String?;
-    if (!force && existingQr != null) {
-      try {
-        final decoded = jsonDecode(existingQr);
-        if (decoded is Map<String, dynamic>) {
-          final exp = decoded['exp'];
-          if (exp is int) {
-            final nowEpoch = DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
-            final secondsLeft = exp - nowEpoch;
-            if (secondsLeft > 15) {
-              return;
-            }
-          }
-        }
-      } catch (_) {
-        // Legacy payloads should be rotated.
-      }
-    }
-
-    _isRotatingQr = true;
-    final updatedAt = DateTime.now().toUtc().toIso8601String();
-    try {
-      final newQr = await QrCodeService().generateEphemeralQrCode(user.id);
-      await SupabaseService.instance.client
-          .from('user_qr_codes')
-          .update({'qr_code': newQr, 'updated_at': updatedAt})
-          .eq('user_id', user.id)
-          .eq('is_active', true);
-
-      if (mounted) {
-        setState(() {
-          _userQrData = {
-            ...?_userQrData,
-            'qr_code': newQr,
-            'updated_at': updatedAt,
-          };
-        });
-      }
-    } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ QR rotation failed: $e');
-      }
-    } finally {
-      _isRotatingQr = false;
-    }
-  }
-
   void _seedProfileFromSession() {
     final user = SupabaseService.instance.getCurrentUser();
     if (user == null) return;
@@ -819,7 +819,6 @@ class _MembersHomePageState extends State<MembersHomePage>
     }
 
     if (state == AppLifecycleState.resumed) {
-      unawaited(_rotateQrCodeIfNeeded(force: true));
       unawaited(_refreshApprovalNotificationsOnResume());
     }
   }
@@ -830,7 +829,7 @@ class _MembersHomePageState extends State<MembersHomePage>
     _homeScrollController.dispose();
     _notificationSubscription?.cancel();
     _unreadChatTimer?.cancel();
-    _qrRotationTimer?.cancel();
+    _homeLoadRetryTimer?.cancel();
     _countdownTimer?.cancel();
     _chatMessagesChannel?.unsubscribe();
     _disableSecureScreenProtection();
@@ -993,7 +992,6 @@ class _MembersHomePageState extends State<MembersHomePage>
           _savingsStats = savingsData;
           _isSavingsLoading = false;
         });
-        unawaited(_rotateQrCodeIfNeeded(force: true));
         _saveSessionSnapshot();
 
         // Check for pending approval notifications and show popup
@@ -1046,7 +1044,7 @@ class _MembersHomePageState extends State<MembersHomePage>
     }
   }
 
-  Future<void> _loadTrustedPartnersCount() async {
+  Future<void> _loadTrustedPartnersCount({int? initialLoadAttempt}) async {
     setState(() => _isLoadingPartnersCount = true);
 
     try {
@@ -1066,22 +1064,17 @@ class _MembersHomePageState extends State<MembersHomePage>
         }
       } else {
         // Fetch from database
-        partnersResponse =
-            await SupabaseService.instance.client
-                    .from(SupabaseService.instance.businessCatalogueTable)
-                    .select(
-                      'id, owner_member_id, name, category, address, logo_url',
-                    )
-                as List<dynamic>;
-
-        dealsResponse =
-            await SupabaseService.instance.client
-                    .from('trusted_partner_discounts')
-                    .select(
-                      'id, name, is_active, business_id, trusted_partner_id',
-                    )
-                    .eq('is_active', true)
-                as List<dynamic>;
+        final responses = await Future.wait<dynamic>([
+          SupabaseService.instance.client
+              .from(SupabaseService.instance.businessCatalogueTable)
+              .select('id, owner_member_id, name, category, address, logo_url'),
+          SupabaseService.instance.client
+              .from('trusted_partner_discounts')
+              .select('id, name, is_active, business_id, trusted_partner_id')
+              .eq('is_active', true),
+        ]);
+        partnersResponse = responses[0] as List<dynamic>;
+        dealsResponse = responses[1] as List<dynamic>;
 
         // Cache the results
         await _cacheService.cacheTrustedPartners(
@@ -1142,13 +1135,14 @@ class _MembersHomePageState extends State<MembersHomePage>
         }
       }
 
-      if (!mounted) return;
+      if (!_isCurrentHomeLoad(initialLoadAttempt)) return;
       setState(() {
         _trustedPartnersCount = partnersResponse.length;
         _availableDealsCount = validDeals.length;
         _isLoadingPartnersCount = false;
       });
     } catch (e) {
+      if (initialLoadAttempt != null) rethrow;
       if (kDebugMode) {
         print('❌ Error loading trusted partners count: $e');
       }
@@ -1210,37 +1204,36 @@ class _MembersHomePageState extends State<MembersHomePage>
     }
   }
 
-  Future<void> _loadFreshLocalAvailability() async {
+  Future<void> _loadFreshLocalAvailability({int? initialLoadAttempt}) async {
     final stopwatch = Stopwatch()..start();
-    final results = await Future.wait<FreshLocalSummary>([
-      Future(() async => DiscountService().getFreshLocalSummary(
-            city: _selectedCity,
-            since: await FreshLocalNotice.loadLastSeen(),
-          )),
-      Future(() async => DiscountService().getLocalSipsSummary(
-            city: _selectedCity,
-            since: await LocalSipsNotice.loadLastSeen(),
-          )),
-      Future(() async => DiscountService().getLocallyActiveSummary(
-            city: _selectedCity,
-            since: await LocallyActiveNotice.loadLastSeen(),
-          )),
-      Future(() async => DiscountService().getLocalEatsSummary(
-        city: _selectedCity,
-        since: await LocalEatsNotice.loadLastSeen(),
-          )),
+    final sinceValues = await Future.wait<DateTime?>([
+      FreshLocalNotice.loadLastSeen(),
+      LocalSipsNotice.loadLastSeen(),
+      LocallyActiveNotice.loadLastSeen(),
+      LocalEatsNotice.loadLastSeen(),
     ]);
-    final summary = results[0];
-    final sips = results[1];
-    final active = results[2];
-    final eats = results[3];
+    final summaries = await DiscountService().getHomeCategorySummaries(
+      city: _selectedCity,
+      rethrowErrors: initialLoadAttempt != null,
+      sinceByCategory: {
+        kFreshLocalCategory: sinceValues[0],
+        kLocalSipsCategory: sinceValues[1],
+        kLocallyActiveCategory: sinceValues[2],
+        kLocalEatsCategory: sinceValues[3],
+      },
+    );
+    const empty = FreshLocalSummary();
+    final summary = summaries[kFreshLocalCategory] ?? empty;
+    final sips = summaries[kLocalSipsCategory] ?? empty;
+    final active = summaries[kLocallyActiveCategory] ?? empty;
+    final eats = summaries[kLocalEatsCategory] ?? empty;
     if (kDebugMode) {
       debugPrint(
         'Member category tabs loaded in ${stopwatch.elapsedMilliseconds}ms '
         '(city: ${_selectedCity ?? 'all'})',
       );
     }
-    if (!mounted) return;
+    if (!_isCurrentHomeLoad(initialLoadAttempt)) return;
     setState(() {
       _hasFreshLocalPartners = summary.hasPartners;
       _freshLocalNewDeals = summary.newDealCount;
@@ -1310,13 +1303,14 @@ class _MembersHomePageState extends State<MembersHomePage>
     );
   }
 
-  Future<void> _loadMemberCityProvince() async {
+  Future<void> _loadMemberCityProvince({int? initialLoadAttempt}) async {
     setState(() => _isLoadingCities = true);
     try {
       final user = SupabaseService.instance.getCurrentUser();
 
       // Restore from SharedPreferences first for fast display
       final prefs = await SharedPreferences.getInstance();
+      if (!_isCurrentHomeLoad(initialLoadAttempt)) return;
       final savedProvince = prefs.getString('selected_province');
       final savedCity = prefs.getString('selected_city');
 
@@ -1347,7 +1341,7 @@ class _MembersHomePageState extends State<MembersHomePage>
       final profileProvince = profile['province'] as String?;
       final profileCity = profile['city'] as String?;
 
-      if (mounted) {
+      if (_isCurrentHomeLoad(initialLoadAttempt)) {
         setState(() {
           if (profileProvince != null && _citiesByProvince.containsKey(profileProvince)) {
             _selectedProvince = profileProvince;
@@ -1366,6 +1360,7 @@ class _MembersHomePageState extends State<MembersHomePage>
         }
       }
     } catch (e) {
+      if (initialLoadAttempt != null) rethrow;
       if (kDebugMode) {
         print('❌ Error loading member city/province: $e');
       }
@@ -1904,6 +1899,67 @@ class _MembersHomePageState extends State<MembersHomePage>
 
   @override
   Widget build(BuildContext context) {
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 800),
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeInCubic,
+      transitionBuilder: (child, animation) {
+        return FadeTransition(
+          opacity: animation,
+          child: SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0, 0.015),
+              end: Offset.zero,
+            ).animate(animation),
+            child: child,
+          ),
+        );
+      },
+      child: _isInitialHomeLoading
+          ? Stack(
+              key: const ValueKey('home-loading'),
+              fit: StackFit.expand,
+              children: [
+                const LoadingScreen(
+                  showMinimumDuration: false,
+                ),
+                if (_initialHomeLoadFailed)
+                  ColoredBox(
+                    color: Colors.black54,
+                    child: Center(
+                      child: Card(
+                        margin: const EdgeInsets.all(24),
+                        child: Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Text(
+                                'Still loading your local deals. We are '
+                                'checking again every 5 seconds.',
+                                textAlign: TextAlign.center,
+                              ),
+                              const SizedBox(height: 16),
+                              FilledButton(
+                                onPressed: _loadInitialHome,
+                                child: const Text('Try again'),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            )
+          : KeyedSubtree(
+              key: const ValueKey('home-ready'),
+              child: _buildLoadedHome(context),
+            ),
+    );
+  }
+
+  Widget _buildLoadedHome(BuildContext context) {
     // When embedded by TP page (hideAppBar=true), use a compact version without the hero.
     if (widget.hideAppBar) {
       return _buildCompactMemberBody(context);
@@ -3290,8 +3346,7 @@ class _MembersHomePageState extends State<MembersHomePage>
               Stack(
                 alignment: Alignment.center,
                 children: [
-                  CustomQrCode(
-                    data: _userQrData?['qr_code'] ?? 'No QR Code Available',
+                  const MemberQrCode(
                     size: 200.0,
                     logoAssetPath: 'assets/heart_flag.png',
                   ),
@@ -3380,8 +3435,7 @@ class _MembersHomePageState extends State<MembersHomePage>
               Stack(
                 alignment: Alignment.center,
                 children: [
-                  CustomQrCode(
-                    data: _userQrData?['qr_code'] ?? 'No QR Code Available',
+                  const MemberQrCode(
                     size: 200.0,
                     logoAssetPath: 'assets/heart_flag.png',
                   ),

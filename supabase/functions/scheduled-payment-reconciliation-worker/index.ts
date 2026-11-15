@@ -23,6 +23,11 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
+import { reconcileBilling } from "../_shared/subscription-billing.ts"
+import { SupabaseBillingStore } from "../_shared/subscription-billing-store.ts"
+import { PaystackBillingProvider } from "../_shared/subscription-billing-provider.ts"
+import { SupabaseDealPaymentStore } from "../_shared/deal-payment-store.ts"
+import { reconcileDealPayment } from "../_shared/deal-payments.ts"
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -68,7 +73,8 @@ serve(async (req) => {
       })
     }
   } else {
-    console.warn("CRON_SECRET not set — running in unsecured mode (configure for production)")
+    console.error("CRON_SECRET is required")
+    return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 })
   }
 
   if (!paystackSecretKey) {
@@ -80,6 +86,43 @@ serve(async (req) => {
   }
 
   const supabase = createClient(supabaseUrl, supabaseServiceKey)
+  const provider = new PaystackBillingProvider(paystackSecretKey)
+  const dealStore = new SupabaseDealPaymentStore(supabase)
+  const { data: dealPayments, error: dealError } = await supabase.from("deal_payment_attempts")
+    .select("*").in("state", ["submitting", "pending", "unknown"])
+    .order("updated_at").limit(20)
+  if (dealError) {
+    console.error("Deal reconciliation lookup failed", dealError)
+    return new Response(JSON.stringify({ error: dealError.message }), { status: 500 })
+  }
+  await Promise.all((dealPayments ?? []).map(async payment => {
+    try {
+      await reconcileDealPayment(dealStore, provider, payment)
+    } catch (error) {
+      console.error(`Deal payment requires reconciliation ref=${payment.reference}`, error)
+    }
+  }))
+
+  const { data: cycles, error: cycleError } = await supabase.from("subscription_billing_cycles")
+    .select("*").in("state", ["submitting", "pending", "unknown"])
+  if (cycleError) {
+    console.error("Billing reconciliation lookup failed", cycleError)
+    return new Response(JSON.stringify({ error: cycleError.message }), { status: 500 })
+  }
+  const billingStore = new SupabaseBillingStore(supabase)
+  const billingProvider = new PaystackBillingProvider(paystackSecretKey)
+  for (const cycle of cycles ?? []) {
+    try {
+      await reconcileBilling(billingStore, billingProvider, cycle)
+    } catch (error) {
+      console.error(`Billing cycle requires reconciliation ref=${cycle.reference}`, error)
+    }
+  }
+  const { error: expiryError } = await supabase.rpc("expire_server_subscription_access")
+  if (expiryError) {
+    console.error("Membership expiry update failed", expiryError)
+    return new Response(JSON.stringify({ error: expiryError.message }), { status: 500 })
+  }
 
   const { data: candidateRows, error: fetchError } = await supabase
     .from("pending_payment_reconciliation_candidates")
@@ -128,6 +171,14 @@ serve(async (req) => {
 // ── Reconcile a single candidate against Paystack's transaction history ──
 async function reconcileCandidate(supabase: any, paystackSecretKey: string, candidate: Candidate): Promise<ActionResult> {
   const { user_id: userId, email, paystack_customer_code: customerCode } = candidate
+
+  const { data: subscription, error: subscriptionError } = await supabase.from("subscriptions")
+    .select("billing_owner").eq("user_id", userId)
+    .order("created_at", { ascending: false }).limit(1).maybeSingle()
+  if (subscriptionError) throw subscriptionError
+  if (subscription?.billing_owner === "server") {
+    return { user_id: userId, email, action: "no_payment_found" }
+  }
 
   const resp = await fetch(
     `https://api.paystack.co/transaction?customer=${encodeURIComponent(customerCode)}&status=success&perPage=5`,

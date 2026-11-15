@@ -1,6 +1,11 @@
 // Paystack API Proxy - Routes all secret-key Paystack calls through server-side
 // The PAYSTACK_SECRET_KEY never leaves this Edge Function.
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
+import { blocksLegacySubscriptionSubmission } from "../_shared/subscription-proxy-guard.ts"
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
+import { SupabaseDealPaymentStore } from "../_shared/deal-payment-store.ts"
+import { reconcileDealPayment, runDealPayment } from "../_shared/deal-payments.ts"
+import { PaystackBillingProvider } from "../_shared/subscription-billing-provider.ts"
 
 const corsHeaders = {
     'Access-Control-Allow-Origin': '*',
@@ -263,7 +268,7 @@ serve(async (req) => {
                     paystackError = `HTTP ${testResp.status}: ${errBody.substring(0, 200)}`
                 }
             } catch (e) {
-                paystackError = `Network error: ${e.message}`
+                paystackError = `Network error: ${e instanceof Error ? e.message : 'Unknown network error'}`
             }
 
             console.log(`Health check: keyPrefix=${keyPrefix} keyLength=${keyLength} valid=${paystackKeyValid}`)
@@ -312,6 +317,45 @@ serve(async (req) => {
         }
 
         const httpMethod = (method || 'GET').toUpperCase()
+        // Subscription submissions must claim a durable billing obligation.
+        // Do not block deal checkout, partner settlement or card tokenisation.
+        if (blocksLegacySubscriptionSubmission(path, httpMethod, body)) {
+            return new Response(JSON.stringify({
+                error: 'subscription_billing_required',
+                message: 'Please update the app to use the secure membership billing service.',
+            }), { status: 409, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+        }
+        const dealStore = new SupabaseDealPaymentStore(createClient(
+            Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+        ))
+        const provider = new PaystackBillingProvider(paystackSecretKey)
+        if (httpMethod === 'POST' && ['/transaction/initialize', '/transaction/charge_authorization'].includes(path)
+            && body?.metadata?.payment_type === 'one_time_payment') {
+            if (typeof body.metadata.deal_authorization_id !== 'string') {
+                throw new Error('A specific approved deal is required; update the app')
+            }
+            const result = await runDealPayment(dealStore, provider, {
+                userId, dealId: body.metadata.deal_authorization_id,
+                action: path === '/transaction/initialize' ? 'checkout' : 'charge',
+                authorizationCode: body.authorization_code, cvv: body.cvv,
+                callbackUrl: body.callback_url, useCustomerCode: Boolean(body.customer),
+            })
+            return new Response(JSON.stringify({ status: true, data: {
+                ...result.transaction, status: result.state === 'paid' ? 'success' : result.state,
+                reference: result.reference,
+                ...(result.authorization_url ? { authorization_url: result.authorization_url } : {}),
+            } }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+        }
+        if (httpMethod === 'GET' && path.startsWith('/transaction/verify/ll-deal-')) {
+            const reference = decodeURIComponent(path.substring('/transaction/verify/'.length))
+            const payment = await dealStore.find(reference, userId)
+            if (!payment) throw new Error('Deal payment was not found for this member')
+            const result = await reconcileDealPayment(dealStore, provider, payment)
+            return new Response(JSON.stringify({ status: true, data: {
+                ...result.transaction, status: result.state === 'paid' ? 'success' : result.state,
+                reference: result.reference,
+            } }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+        }
         const paystackUrl = `https://api.paystack.co${path}`
 
         // Log key diagnostics on every request for debugging
@@ -333,6 +377,25 @@ serve(async (req) => {
 
         const paystackResponse = await fetch(paystackUrl, fetchOptions)
         const responseText = await paystackResponse.text()
+        if (paystackResponse.ok && httpMethod === 'GET' && path.startsWith('/transaction/verify/')) {
+            const verified = JSON.parse(responseText)
+            const transaction = verified.data
+            if (transaction?.status === 'success' && transaction.metadata?.payment_type === 'one_time_payment') {
+                if (transaction.metadata.user_id !== userId ||
+                    typeof transaction.metadata.deal_authorization_id !== 'string' ||
+                    transaction.reference !== decodeURIComponent(path.substring('/transaction/verify/'.length))) {
+                    throw new Error('Verified transaction does not match this deal payment')
+                }
+                const { error } = await createClient(
+                    Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+                ).rpc('finalise_deal_payment', {
+                    p_deal_id: transaction.metadata.deal_authorization_id, p_user_id: userId,
+                    p_reference: transaction.reference, p_transaction_id: String(transaction.id),
+                    p_amount_cents: transaction.amount, p_currency: transaction.currency, p_paid_at: transaction.paid_at,
+                })
+                if (error) throw error
+            }
+        }
 
         // Return Paystack's response as-is (status code + body)
         return new Response(responseText, {
@@ -349,7 +412,7 @@ serve(async (req) => {
         console.error(`[${requestId}] Paystack proxy error:`, error)
         return new Response(
             JSON.stringify({
-                error: error.message || 'Internal proxy error',
+                error: error instanceof Error ? error.message : 'Internal proxy error',
                 request_id: requestId,
             }),
             {

@@ -547,6 +547,9 @@ class _PartnerQrRedemptionPageState extends State<PartnerQrRedemptionPage> {
 
   String _readableError(Object error) {
     final text = error.toString();
+    if (text.contains('DEAL_TERMS_CHANGED')) {
+      return 'This deal has changed. Reopen it and try again.';
+    }
     final marker = text.indexOf('QR_REDEMPTION_');
     if (marker >= 0) {
       final messageStart = text.indexOf(':', marker);

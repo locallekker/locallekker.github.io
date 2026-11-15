@@ -398,7 +398,9 @@ class _AppInitializerState extends State<AppInitializer> {
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           // Show splash only while initial route is being resolved.
-          return const LoadingScreen(showMinimumDuration: true);
+          return const LoadingScreen(
+            showMinimumDuration: false,
+          );
         } else if (snapshot.hasError) {
           // Fail-safe: if bootstrap fails, land on welcome instead of looping on splash.
           return const WelcomePage();

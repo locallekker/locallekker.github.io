@@ -12,6 +12,7 @@ import 'deal_selection_page.dart'; // Import for BillDiscountDialog
 import 'package:flutter/foundation.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../widgets/branded_app_bar.dart';
+import '../../widgets/deal_image_preview.dart';
 import '../../widgets/website_redirect_overlay.dart';
 import '../../widgets/restaurant_deal_badge.dart';
 import '../members/restaurant_deal_request_page.dart';
@@ -846,60 +847,69 @@ class _TrustedPartnerShopPageState extends State<TrustedPartnerShopPage> {
                               children: [
                                 // Deal Image - Left Side (Full Height)
                                 if (hasImage)
-                                  ClipRRect(
-                                    borderRadius: BorderRadius.circular(8),
-                                    child: Image.network(
-                                      discount.imageUrl!,
-                                      width: 120,
-                                      height: 120,
-                                      fit: BoxFit.cover,
-                                      errorBuilder:
-                                          (context, error, stackTrace) {
-                                            return Container(
-                                              width: 120,
-                                              height: 120,
-                                              decoration: BoxDecoration(
-                                                gradient: LinearGradient(
-                                                  begin: Alignment.topLeft,
-                                                  end: Alignment.bottomRight,
-                                                  colors: [
-                                                    Colors.blue.shade300,
-                                                    Colors.purple.shade300,
-                                                  ],
+                                  GestureDetector(
+                                    onTap: () => showDialog<void>(
+                                      context: context,
+                                      builder: (_) => DealImagePreview(
+                                        imageUrl: discount.imageUrl!,
+                                        dealName: discount.name,
+                                      ),
+                                    ),
+                                    child: ClipRRect(
+                                      borderRadius: BorderRadius.circular(8),
+                                      child: Image.network(
+                                        discount.imageUrl!,
+                                        width: 120,
+                                        height: 120,
+                                        fit: BoxFit.cover,
+                                        errorBuilder:
+                                            (context, error, stackTrace) {
+                                              return Container(
+                                                width: 120,
+                                                height: 120,
+                                                decoration: BoxDecoration(
+                                                  gradient: LinearGradient(
+                                                    begin: Alignment.topLeft,
+                                                    end: Alignment.bottomRight,
+                                                    colors: [
+                                                      Colors.blue.shade300,
+                                                      Colors.purple.shade300,
+                                                    ],
+                                                  ),
+                                                  borderRadius:
+                                                      BorderRadius.circular(8),
                                                 ),
-                                                borderRadius:
-                                                    BorderRadius.circular(8),
-                                              ),
-                                              child: Icon(
-                                                discount.isBillDiscount
-                                                    ? Icons.receipt_long
-                                                    : Icons.local_offer,
-                                                size: 48,
-                                                color: Colors.white70,
-                                              ),
-                                            );
-                                          },
-                                      loadingBuilder:
-                                          (context, child, loadingProgress) {
-                                            if (loadingProgress == null) {
-                                              return child;
-                                            }
-                                            return Container(
-                                              width: 120,
-                                              height: 120,
-                                              color: Colors.grey.shade200,
-                                              child: const Center(
-                                                child: SizedBox(
-                                                  width: 20,
-                                                  height: 20,
-                                                  child:
-                                                      CircularProgressIndicator(
-                                                        strokeWidth: 2,
-                                                      ),
+                                                child: Icon(
+                                                  discount.isBillDiscount
+                                                      ? Icons.receipt_long
+                                                      : Icons.local_offer,
+                                                  size: 48,
+                                                  color: Colors.white70,
                                                 ),
-                                              ),
-                                            );
-                                          },
+                                              );
+                                            },
+                                        loadingBuilder:
+                                            (context, child, loadingProgress) {
+                                              if (loadingProgress == null) {
+                                                return child;
+                                              }
+                                              return Container(
+                                                width: 120,
+                                                height: 120,
+                                                color: Colors.grey.shade200,
+                                                child: const Center(
+                                                  child: SizedBox(
+                                                    width: 20,
+                                                    height: 20,
+                                                    child:
+                                                        CircularProgressIndicator(
+                                                          strokeWidth: 2,
+                                                        ),
+                                                  ),
+                                                ),
+                                              );
+                                            },
+                                      ),
                                     ),
                                   )
                                 else

@@ -162,8 +162,8 @@ class _PaystackWebViewPageState extends State<PaystackWebViewPage> with WidgetsB
   Future<void> _silentVerifyPayment({String? url}) async {
     if (_processingPayment || _showingSuccess || _paymentHandled) return;
 
-    String? ref;
-    if (url != null) {
+    String? ref = widget.transactionReference;
+    if (ref == null && url != null) {
       ref = _extractReferenceFromUrl(url);
     }
     ref ??= widget.transactionReference;
@@ -215,8 +215,8 @@ class _PaystackWebViewPageState extends State<PaystackWebViewPage> with WidgetsB
     _logger.i('=== VERIFYING SUBSCRIPTION PAYMENT WITH PAYSTACK API ===');
 
     // Extract reference from URL first, fall back to stored transaction reference
-    String? ref;
-    if (url != null) {
+    String? ref = widget.transactionReference;
+    if (ref == null && url != null) {
       ref = _extractReferenceFromUrl(url);
     }
     // Fall back to the stored transaction reference from initialization
@@ -266,53 +266,12 @@ class _PaystackWebViewPageState extends State<PaystackWebViewPage> with WidgetsB
     }
 
     if (verifiedDetails == null) {
-      // Paystack API didn't confirm success — but the webhook may have already
-      // activated the subscription in the database. Check directly.
-      _logger.i('API verification failed, checking DB for webhook-activated subscription...');
-      try {
-        final dbCheck = await SupabaseService.instance.client
-            .from('subscriptions')
-            .select('status')
-            .eq('user_id', widget.userId)
-            .eq('status', 'active')
-            .limit(1);
-        if (dbCheck.isNotEmpty) {
-          _logger.i('Subscription already active in DB (webhook handled it) — navigating home');
-          if (mounted && !_paymentHandled) {
-            _paymentHandled = true;
-            _successCheckTimer?.cancel();
-            _manualVerifyTimer?.cancel();
-            _apiVerifyTimer?.cancel();
-            _subscriptionChannel?.unsubscribe();
-            _subscriptionChannel = null;
-            // Clear pending transaction reference
-            try {
-              await PaymentStatusService().clearPendingTransactionReference(widget.userId);
-              await PaymentStatusService().clearPendingPayment(widget.userId);
-            } catch (_) {}
-            setState(() {
-              _showingSuccess = true;
-              _processingPayment = true;
-            });
-            Future.delayed(const Duration(seconds: 3), () {
-              if (mounted) {
-                NavigationService().navigateToHomeAfterPayment(context);
-              }
-            });
-          }
-          return;
-        }
-      } catch (e) {
-        _logger.w('DB subscription check failed: $e');
-      }
-
-      _logger.e('Payment verification not confirmed after $maxRetries attempts');
+      _logger.w('This payment is not confirmed; retaining its reference for recovery');
       if (mounted) {
         setState(() {
           _processingPayment = false;
           _showManualVerify = true;
         });
-        _logger.i('Verification failed — showing manual verify button (no auto-restart)');
       }
       return;
     }
@@ -372,14 +331,14 @@ class _PaystackWebViewPageState extends State<PaystackWebViewPage> with WidgetsB
 
     try {
       // Try to verify Paystack transaction and save authorization for renewals
-      String? reference;
-      if (url != null) {
+      String? reference = widget.transactionReference;
+      if (reference == null && url != null) {
         reference = _extractReferenceFromUrl(url);
       }
       // Fall back to stored transaction reference
       reference ??= widget.transactionReference;
       _logger.i('Using reference for card save: ${reference ?? 'none'}');
-      if (reference != null) {
+      if (reference != null && !reference.startsWith('ll-sub-')) {
           try {
             _logger.i('Verifying Paystack transaction: $reference');
             final paymentDetails = await _paystackService.verifyTransaction(
@@ -469,7 +428,9 @@ class _PaystackWebViewPageState extends State<PaystackWebViewPage> with WidgetsB
       // subscription.disable) can be matched to the correct user.
       String? paystackSubscriptionCode;
       try {
-        final customerCode = await _paystackService.getPaystackCustomerCode(widget.userId);
+        final customerCode = reference?.startsWith('ll-sub-') == true
+            ? null
+            : await _paystackService.getPaystackCustomerCode(widget.userId);
         if (customerCode != null && customerCode.isNotEmpty) {
           paystackSubscriptionCode = await _paystackService.getCustomerSubscriptionCode(
             customerCodeOrEmail: customerCode,
@@ -506,6 +467,7 @@ class _PaystackWebViewPageState extends State<PaystackWebViewPage> with WidgetsB
           userId: widget.userId,
           planType: widget.planType,
           paystackSubscriptionCode: paystackSubscriptionCode,
+          paymentReference: reference,
         );
       }
 
@@ -546,19 +508,15 @@ class _PaystackWebViewPageState extends State<PaystackWebViewPage> with WidgetsB
       _logger.e('Error processing payment: $e');
       _logger.e('Stack trace: $stackTrace');
       if (mounted) {
-        // Payment was taken — show success and navigate home.
-        // The recovery flow in NavigationService will activate the subscription on next launch.
+        _paymentHandled = false;
         setState(() {
-          _showingSuccess = true;
-          _processingPayment = true;
-          _processingStatus = 'Payment received! Setting up your account...';
+          _showingSuccess = false;
+          _processingPayment = false;
+          _showManualVerify = true;
         });
-        // Navigate home after a short delay so recovery can finish activation
-        Future.delayed(const Duration(seconds: 3), () {
-          if (mounted) {
-            NavigationService().navigateToHomeAfterPayment(context);
-          }
-        });
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Payment confirmation is incomplete. Do not pay again. Please retry verification.'),
+        ));
       }
     }
   }
@@ -685,27 +643,7 @@ class _PaystackWebViewPageState extends State<PaystackWebViewPage> with WidgetsB
   /// Called when Supabase Realtime detects the subscription is now active.
   void _onRealtimeSubscriptionActivated() {
     if (!mounted || _showingSuccess || _paymentHandled) return;
-
-    _logger.i('Realtime detected subscription activation — navigating home');
-
-    _paymentHandled = true;
-
-    // Stop all polling/timers
-    _successCheckTimer?.cancel();
-    _manualVerifyTimer?.cancel();
-    _apiVerifyTimer?.cancel();
-
-    setState(() {
-      _processingPayment = true;
-      _showingSuccess = true;
-    });
-
-    // Brief delay so the user sees the success screen
-    Future.delayed(const Duration(seconds: 3), () {
-      if (mounted) {
-        NavigationService().navigateToHomeAfterPayment(context);
-      }
-    });
+    unawaited(_silentVerifyPayment());
   }
 
   void _startSuccessPolling() {

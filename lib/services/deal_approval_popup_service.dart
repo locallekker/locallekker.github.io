@@ -1173,87 +1173,23 @@ class DealApprovalPopupService {
       );
 
       if (chargeResult == 'success') {
-        if (kDebugMode) {
-          print('✅ Saved card charge successful for deal ${deal.id}');
-        }
-
-
-        // Update deal authorization status to 'completed' directly
-        try {
-          final now = DateTime.now().toUtc().toIso8601String();
-          final updateResponse = await SupabaseService.instance.client
-              .from('deal_authorizations')
-              .update({
-                'status': 'completed',
-                'payment_completed_at': now,
-                'completed_at': now,
-                'updated_at': now,
-              })
-              .eq('id', deal.id)
-              .select();
-
-          if (updateResponse.isEmpty) {
-            if (kDebugMode) {
-              print('⚠️ Deal status update returned empty - RLS may have blocked it');
-            }
-          } else {
-            if (kDebugMode) {
-              print('✅ Deal authorization ${deal.id} marked as completed');
-            }
-          }
-        } catch (e) {
-          if (kDebugMode) {
-            print('⚠️ Failed to update deal status: $e');
-          }
-          // Payment was taken — webhook will handle as fallback
-        }
-
-        // Defensive: ensure ALL unread deal_approved notifications for this
-        // deal are marked read so the realtime listener on members_home_page
-        // doesn't re-trigger checkAndShowApprovalPopup for a deal that has
-        // just been paid (root cause of the popup re-appearing after a
-        // successful in-app payment).
-        try {
-          await SupabaseService.instance.client
-              .from('notifications')
-              .update({'is_read': true})
-              .eq('user_id', user.id)
-              .eq('is_read', false)
-              .inFilter('type', ['deal_approved', 'pos_deal_approved'])
-              .filter('data->>deal_authorization_id', 'eq', deal.id);
-        } catch (e) {
-          if (kDebugMode) {
-            print('⚠️ Failed to mark deal_approved notifications as read: $e');
-          }
-        }
-
-        // Generate receipt for saved card payment
-        await _generateReceiptForSavedCardPayment(
-          dealId: deal.id,
-          businessName: businessName,
-          discountName: discountName,
-        );
-
+        // Server-owned deal payments have already recorded the receipt atomically.
         if (context.mounted) {
           _dismissPaymentProgressOverlay(context);
-          ScaffoldMessenger.of(context).clearSnackBars();
+          await NavigationService().navigateToHomeAfterPayment(context);
+        }
+        return;
+      }
+
+      if (chargeResult == 'pending' || chargeResult == null) {
+        if (context.mounted) {
+          _dismissPaymentProgressOverlay(context);
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Payment successful!'),
-              backgroundColor: Colors.green,
-              duration: Duration(seconds: 3),
+              content: Text('Your payment is being confirmed. Do not pay again. Check your deal status shortly.'),
+              duration: Duration(seconds: 8),
             ),
           );
-        }
-
-        // Navigate to home so the members_home_page rebuilds with fresh
-        // state (subscriptions, pending payments, notification stream).
-        // Without this, the user stays on the original screen whose
-        // realtime notification subscription may re-trigger the
-        // "Deal Approved" popup before the just-marked-read state
-        // has propagated through the stream.
-        if (context.mounted) {
-          await NavigationService().navigateToHomeAfterPayment(context);
         }
         return;
       }
@@ -1263,7 +1199,7 @@ class DealApprovalPopupService {
       // so the member can correct their CVV or choose a different card.
       // Do NOT fall through to the WebView — the member already has a
       // saved card; silently reloading the card-entry page is confusing.
-      final gatewayReason = (chargeResult != null && chargeResult.startsWith('failed:'))
+      final gatewayReason = chargeResult.startsWith('failed:')
           ? chargeResult.substring('failed:'.length)
           : 'Payment declined';
       // Paystack's risk engine can flag a card for fraud/velocity after several
@@ -1473,170 +1409,7 @@ class DealApprovalPopupService {
     return result;
   }
 
-  /// Generate receipts after a successful saved card payment.
-  /// Creates entries in both virtual_receipts (member) and deal_receipts (TP)
-  /// and sends notifications to both parties.
-  Future<void> _generateReceiptForSavedCardPayment({
-    required String dealId,
-    required String businessName,
-    required String discountName,
-  }) async {
-    try {
-      if (kDebugMode) {
-        print('🧾 Generating receipt for saved card payment, deal: $dealId');
-      }
 
-      // Fetch deal authorization with joined data
-      final dealResponse = await _supabase
-          .from('deal_authorizations')
-          .select('''
-            *,
-            trusted_partner_discounts(
-              *,
-              businesses(*)
-            ),
-            profiles(*)
-          ''')
-          .eq('id', dealId)
-          .single();
-
-      final dealData = dealResponse;
-      final discountData = dealData['trusted_partner_discounts'];
-      final businessData = discountData?['businesses'];
-      final memberData = dealData['profiles'];
-      final businessId =
-          discountData?['business_id'] as String? ??
-          dealData['business_id'] as String?;
-      final trustedPartnerId =
-          discountData?['trusted_partner_id'] as String? ??
-          businessData?['owner_member_id'] as String?;
-
-      if (businessId == null) {
-        if (kDebugMode) {
-          print('❌ Cannot generate receipt: business_id is null');
-        }
-        return;
-      }
-
-      // Generate sequential receipt number
-      String receiptNumber;
-      try {
-        final result = await _supabase.rpc(
-          'get_next_receipt_number',
-          params: {'p_business_id': businessId},
-        );
-        receiptNumber = result as String;
-      } catch (e) {
-        receiptNumber = 'RCP-${DateTime.now().millisecondsSinceEpoch}';
-        if (kDebugMode) {
-          print('⚠️ Sequential numbering failed, using fallback: $receiptNumber');
-        }
-      }
-
-      final qrCode = 'RECEIPT:$dealId:$receiptNumber';
-
-      final receiptData = {
-        'receipt_number': receiptNumber,
-        'deal_authorization_id': dealId,
-        'business_name': businessData?['name'] ?? businessName,
-        'business_id': businessId,
-        'member_name':
-            '${memberData?['name'] ?? 'Unknown'} ${memberData?['surname'] ?? 'Member'}',
-        'member_email': memberData?['email'] ?? 'N/A',
-        'discount_name': discountData?['name'] ?? discountName,
-        'amount': dealData['amount'] ?? 0.0,
-        'payment_method': 'saved_card',
-        'transaction_date': DateTime.now().toUtc().toIso8601String(),
-        'status': 'completed',
-      };
-
-      // Insert into virtual_receipts table (member receipt)
-      await _supabase.from('virtual_receipts').insert({
-        'deal_authorization_id': dealId,
-        'receipt_number': receiptNumber,
-        'receipt_data': receiptData,
-        'qr_code': qrCode,
-      }).select().single();
-
-      if (kDebugMode) {
-        print('✅ Virtual receipt created: $receiptNumber');
-      }
-
-      // Insert into deal_receipts table (trusted partner receipt)
-      await _supabase.from('deal_receipts').insert({
-        'member_id': memberData?['id'],
-        'trusted_partner_id': trustedPartnerId,
-        'business_id': businessId,
-        'deal_authorization_id': dealId,
-        'receipt_number': receiptNumber,
-        'amount': dealData['amount'],
-        'business_name': businessData?['name'] ?? businessName,
-        'business_contact': businessData?['contact_number'],
-        'business_email': businessData?['contact_email'],
-        'discount_name': discountData?['name'] ?? discountName,
-        'member_name':
-            '${memberData?['name'] ?? 'Unknown'} ${memberData?['surname'] ?? 'Member'}',
-        'member_email': memberData?['email'],
-        'member_phone': memberData?['contact'],
-        'payment_method': 'saved_card',
-      });
-
-      if (kDebugMode) {
-        print('✅ Deal receipt created: $receiptNumber');
-      }
-
-      // Send notifications to both parties
-      if (trustedPartnerId != null) {
-        try {
-          final memberName =
-              '${memberData?['name'] ?? 'Unknown'} ${memberData?['surname'] ?? 'Member'}';
-          final bName = businessData?['name'] ?? businessName;
-          final dName = discountData?['name'] ?? discountName;
-          final amount = (dealData['amount'] as num?)?.toDouble() ?? 0.0;
-
-          await _notificationService.notifyTrustedPartnerOfPayment(
-            trustedPartnerId: trustedPartnerId,
-            dealAuthorizationId: dealId,
-            memberId: memberData?['id'] ?? '',
-            memberName: memberName,
-            dealName: dName,
-            amount: amount,
-            receiptNumber: receiptNumber,
-            businessName: bName,
-          );
-
-          final currentUserId = _supabase.auth.currentUser?.id;
-          if (currentUserId != null) {
-            await _notificationService.notifyMemberOfPaymentSuccess(
-              memberId: currentUserId,
-              dealAuthorizationId: dealId,
-              businessName: bName,
-              dealName: dName,
-              amount: amount,
-              receiptNumber: receiptNumber,
-            );
-          }
-
-          if (kDebugMode) {
-            print('✅ Payment notifications sent');
-          }
-        } catch (e) {
-          if (kDebugMode) {
-            print('⚠️ Failed to send notifications: $e');
-          }
-        }
-      }
-
-      if (kDebugMode) {
-        print('🧾 ✅ Receipt generation complete: $receiptNumber');
-      }
-    } catch (e) {
-      if (kDebugMode) {
-        print('❌ Receipt generation failed: $e');
-      }
-      // Don't rethrow — payment was successful, receipt failure shouldn't block the user
-    }
-  }
 }
 
 /// Stateful dialog for card selection + CVV entry

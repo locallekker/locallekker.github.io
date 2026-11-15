@@ -8,6 +8,22 @@ void main() {
   RestaurantDealConfig cfg(RestaurantDealType t, Map<String, dynamic> d) =>
       RestaurantDealConfig(t, d);
 
+  test('restaurant percentage validation rejects values above 100', () {
+    final schedule = DealSchedule(type: ScheduleType.weekly);
+    for (final type in [
+      RestaurantDealType.foodPercent,
+      RestaurantDealType.group,
+      RestaurantDealType.happyHour,
+      RestaurantDealType.birthday,
+    ]) {
+      expect(
+        cfg(type, {'percentage': 101, 'reward': 'percent', 'min_party_size': 2})
+            .validate(schedule: schedule),
+        'Enter a percentage between 1 and 100.',
+      );
+    }
+  });
+
   test('% off food excludes drinks', () {
     final q = cfg(RestaurantDealType.foodPercent, {'percentage': 20})
         .quote(const RestaurantDealInputs(billTotal: 500, excludedAmount: 100, tip: 50));

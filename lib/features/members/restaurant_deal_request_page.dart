@@ -288,6 +288,7 @@ class _RestaurantDealRequestPageState extends State<RestaurantDealRequestPage> {
           'name': widget.discount.name,
           'deal_type': _type.key,
           'custom_data': widget.discount.customData,
+          'terms_revision': widget.discount.termsRevision,
           'headline': _config.headline,
           'business_name': widget.partnerName,
         },
@@ -308,6 +309,13 @@ class _RestaurantDealRequestPageState extends State<RestaurantDealRequestPage> {
           setState(() => _submitting = false);
           await _switchToPayInStore();
         }
+        return;
+      }
+      if (e.toString().contains('DEAL_TERMS_CHANGED')) {
+        _showMessage(
+          'This deal has changed. Reopen it and try again.',
+          color: Colors.red.shade700,
+        );
         return;
       }
       final match = _serverErrorPattern.firstMatch(e.toString());

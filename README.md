@@ -2,6 +2,180 @@
 
 A new Flutter project.
 
+## Trusted partner category changes
+
+When an administrator changes a partner's category or special-category flags,
+all existing deals must be reviewed before the partner and deals are saved
+together. Pending deal requests and unresolved payments must be resolved first.
+The new category determines the deal types available during review; cancelling
+the review leaves the partner and deals unchanged.
+
+Deploy `20261115100000_review_partner_category_deals.sql` only after testing it
+against a disposable database matching production and verifying the deal-payment
+migration is present. Release the updated app alongside the migration. Once a
+deal has been reviewed, older app versions cannot edit it or submit requests
+against it; members and partners must update and reopen the deal. Do not retry
+or alter unresolved live payments merely to test category changes.
+
+## Member QR validity
+
+Membership expiry and QR payload expiry are separate. A permanent TP membership
+still uses a short-lived QR when displayed. Both member dashboards and TP QR
+dialogs use `MemberQrCode` to register a fresh payload before displaying it,
+refresh it while open, and refresh after returning from the background.
+Expired codes are hidden if connectivity prevents refresh; the member can retry.
+Only existing active, unexpired QR records are updated: displaying a QR never
+activates membership, extends paid access, or charges a payment.
+This client fix requires an app release; existing installations must reopen their
+QR after a support-side repair.
+
+## Promotional signup continuation
+
+Completing signup or choosing **Accept & Proceed to Payment** explicitly opens
+the membership activation screen for a member who is not yet active. That screen
+checks the signed-in email's invitation and presents its introductory price and
+free-month period instead of the standard monthly signup option. Ordinary sign-in
+still opens browse mode, and active members are not asked to pay again.
+An interrupted signup with a verified account can resume by signing in, accepting
+terms if required, and opening membership activation. Invitations are not claimed
+and free periods do not begin until the introductory payment is verified.
+
+## Server-owned membership billing
+
+Membership payments now use a dedicated `subscription-billing` Edge Function.
+Automatic renewal, saved-card manual payment, introductory checkout, callbacks
+and reconciliation share one durable obligation per subscription cycle.
+Only one caller can change an obligation from `ready` to `submitting`.
+An interrupted submission remains unresolved indefinitely: no timer, app restart
+or billing-date edit releases it for another debit. Verify the existing reference
+instead. Only a **verified terminal failure**, followed by a new member-initiated
+payment request, permits a new attempt; the previous reference is retained in
+`subscription_billing_failed_attempts`. Automatic failed-payment retries are off.
+
+Verified successful payments atomically update the cycle, membership, profile,
+reusable card, QR expiry, renewal history and notification. Cancellation during a submitted
+payment is preserved. An in-flight payment cannot be cancelled by deleting a
+local lock. Membership access expires server-side after the existing 36-hour
+renewal grace; unresolved payments continue to be reconciled, not recharged.
+New memberships use calendar months. Existing memberships require an explicit
+choice of `30_days` or `calendar_month` when migrated; paid-through dates and
+promotion periods are not changed by the migration. Lifetime offers do not renew.
+Membership development testing must use Paystack sandbox credentials: client-only
+simulation can no longer activate a real membership.
+Account deletion is blocked while a payment is in flight; reconcile it first.
+Settled-account deletion retains the existing cascading cleanup behaviour.
+
+### Staged rollout for new memberships
+
+Back up the database and deployed payment functions before changing live billing.
+Pause renewal and reconciliation jobs for the deployment window. Apply the
+deal-payment and server-owned billing migrations together with
+[`20261114200000_staged_subscription_billing_rollout.sql`](supabase/migrations/20261114200000_staged_subscription_billing_rollout.sql).
+The staged migration restores legacy renewal claims **only** for
+`migration_pending` memberships. Server-owned memberships are selected separately
+by `server_subscriptions_due_for_renewal` and cannot use a legacy claim.
+
+Inventory Paystack before resuming billing. Mark memberships with verified active
+provider subscriptions as `paystack`, including those missing a locally saved SUB
+code, so the legacy worker cannot also debit them. Do not change their paid-through
+dates, prices, cancellation choices or provider subscriptions.
+
+Configure `SUBSCRIPTION_CHECKOUT_CALLBACK_URL` with the existing hosted payment
+return URL. Deploy `subscription-billing`, `scheduled-server-renewal-worker`,
+`scheduled-payment-reconciliation-worker`, `paystack-webhook` and `paystack-proxy`.
+**Do not replace the deployed legacy `scheduled-renewal-worker` during this stage.**
+The separate server worker shares the new renewal implementation without replacing
+the legacy deployment. The staged migration creates its cron job disabled, using
+the existing renewal schedule, URL and credentials.
+
+Verify checkout, webhook/reconciliation availability, and disjoint renewal
+cohorts before enabling `server-subscription-renewal` and resuming the existing
+jobs. Test worker authentication without submitting live debits. New memberships
+use server-owned billing; existing memberships retain their current renewal path.
+Existing members cannot start a second payment through the new endpoint until
+their billing is individually reconciled. The guarded proxy rejects legacy
+membership checkout/charge requests rather than bypassing that restriction.
+
+### Full migration of existing memberships (not automatic)
+
+Do not deploy the new app independently of its backend.
+If the staged rollout is already applied, do not reapply its migrations or replace
+the legacy worker. Continue with provider reconciliation and the per-member
+ownership migration below; the two disjoint renewal jobs can remain in place.
+
+1. Back up the database and inventory **all** Paystack subscriptions and unresolved
+   transactions for each member (not just the locally saved SUB code). Reconcile
+   successful charges and preserve paid access before switching billing owners.
+2. Pause the local renewal cron job for the maintenance window. Apply
+   [the additive deal-payment migration](supabase/migrations/20261112180000_durable_deal_payments.sql)
+   before deploying the guarded `paystack-proxy`, which now requires its RPCs.
+   The proxy stops legacy membership submissions while preserving ledger-backed
+   deal payments. Then apply
+   [the billing migration](supabase/migrations/20261104100000_server_owned_subscription_billing.sql).
+   Existing rows with a provider code become `paystack`; all other existing
+   rows become `migration_pending`, **not** automatically chargeable.
+3. Configure `CRON_SECRET`, `PAYSTACK_SECRET_KEY` and
+   `SUBSCRIPTION_CHECKOUT_CALLBACK_URL` on the Edge Functions. Use the existing
+   hosted auth/payment-return URL for the latter, not an arbitrary client URL.
+4. Deploy `subscription-billing`, `scheduled-server-renewal-worker`,
+   `scheduled-payment-reconciliation-worker`, `paystack-webhook` and
+   `paystack-proxy` together. The proxy blocks legacy subscription submissions
+   and plan creation/reactivation, but permits provider cancellation. Existing
+   provider-owned renewals retain webhook handling, including `invoice.update`.
+5. Release the updated app. Older versions cannot directly extend memberships
+   or charge subscriptions through the proxy; show an update-required message
+   rather than falling back to an independent charge.
+6. For each small migration cohort, disable every provider recurring subscription,
+   verify cancellation and resolve any existing invoices/charges. Only then call
+   the service-role-only `enable_server_subscription_billing(subscription_id,
+   evidence, interval)` RPC, recording the provider verification evidence and
+   agreed interval. A missing SUB code is **not** evidence. The function refuses
+   migration with a legacy renewal claim or an unresolved ledger payment.
+7. Resume the renewal cron and existing 30-minute reconciliation job. Monitor
+   `subscription_billing_cycles`, `subscription_billing_audit`, provider
+   transactions and worker errors. A cron-authenticated renewal request may include
+   `{"user_id":"<authorised-test-member-id>"}` to isolate a test; omitting it
+   processes all eligible members. Do not retry live debits merely to test locking.
+
+Rollback means **pause submissions and keep reconciliation running**. Never restore
+competing billing paths or automatically re-enable Paystack subscriptions.
+Database constraints protect application submissions/fulfilment, not against
+provider or bank errors; investigate unmatched legacy charges and unknown outcomes
+before permitting any additional debit.
+
+Deal checkout and saved-card payments still use `paystack-proxy`, but the server
+now claims a durable `deal_payment_attempts` record before submitting a payment.
+Amount, member and partner subaccount come from the approved deal, not the client.
+Pending or interrupted payments are verified using the same reference; only a
+freshly verified terminal failure permits a new manual attempt. Deal completion,
+virtual/partner/member receipts and the member notification commit atomically.
+Webhook replay repairs legacy payments only when they identify a specific deal;
+it never guesses the member's latest deal. The reconciliation worker also checks
+unresolved deal attempts. Existing cron credentials and schedules are retained,
+with payment request timeouts extended to 120 seconds.
+
+Subscription operations do not supply partner settlement parameters. Card setup
+is bound to its initialized reference and rejects nonreusable authorizations.
+Membership and deal Realtime events trigger verification, not a success screen.
+The bill-approval entry point uses the existing deal-approval dashboard: partners
+approve requests and the member completes payment on their own device.
+
+Validation:
+
+- `node --test supabase/functions/_shared/*.test.mjs` (Node 24): concurrent
+  renewals, manual/scheduler races, timeouts, database interruption, webhook
+  replay, verified-failure retries and proxy/deal isolation.
+- `flutter test test/subscription_billing_service_test.dart test/subscription_renewal_guard_test.dart test/subscription_dates_test.dart test/paystack_service_test.dart test/payment_status_service_test.dart`.
+- Run [the billing SQL regressions](supabase/tests/subscription_billing.sql) only
+  against a disposable migrated database. They roll back fixtures and make no
+  provider requests. Also run the migration and app in staging with sandbox
+  Paystack, existing promotion schema and all production RLS policies before rollout.
+- Run [the deal-payment SQL regressions](supabase/tests/deal_payments.sql) in the
+  same disposable environment. These include unknown outcomes, terminal-failure
+  retries, ownership/amount checks, receipt rollback and idempotent finalisation.
+  Reduced schema-only fixtures do not replace full staging RLS, triggers or
+  native 3DS/sandbox testing.
+
 ## Mac download and iOS publishing
 
 Use the [iOS publishing guide](IOS_PUBLISHING_GUIDE.md) to download the clean
@@ -36,6 +210,20 @@ Run `flutter test test/guest_browsing_test.dart` for guest UI and request-gate
 regressions. Run [the database regression script](supabase/tests/guest_browsing.sql)
 using `supabase test db` against a disposable database with migrations applied,
 never against production.
+
+### Dashboard startup
+
+The opening logo stays visible over the Local Lekker background while the dashboard
+restores the saved area and loads partner counts and all active category banners.
+The complete dashboard then fades in together, rather than briefly displaying
+only Partners. All category banners come from two parallel catalogue queries
+(`DiscountService.getHomeCategorySummaries`). Startup checks progress every
+5 seconds: slow requests keep running, failed loads retry automatically, and
+after 30 seconds a **Try again** prompt appears while checks continue, without
+exposing a partial dashboard.
+
+Run `flutter test test/member_home_startup_test.dart` for startup readiness,
+area filtering, fade timing and retry regressions.
 
 ### Guest conversion tracking
 

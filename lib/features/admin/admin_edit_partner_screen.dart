@@ -9,6 +9,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:local_lekker/core/theme/app_colors.dart';
 import 'package:local_lekker/widgets/branded_app_bar.dart';
 import '../../core/constants/deal_categories.dart';
+import '../../services/discount_service.dart';
+import 'partner_deal_review_dialog.dart';
 import 'widgets/liquor_license_uploader.dart';
 
 /// Screen for admins to edit an existing Trusted Partner's details.
@@ -280,11 +282,52 @@ class _AdminEditPartnerScreenState extends State<AdminEditPartnerScreen> {
 
     try {
       final partnerId = _p['id'] as String;
+      final currentBusiness = await _supabase
+          .from('businesses')
+          .select('category, sells_fresh_produce, sells_alcohol, offers_sports_activities')
+          .eq('owner_member_id', partnerId)
+          .maybeSingle();
+      final categoryChanged = currentBusiness != null &&
+          (currentBusiness['category'] != _selectedCategory ||
+              (currentBusiness['sells_fresh_produce'] == true) != _sellsFreshProduce ||
+              (currentBusiness['sells_alcohol'] == true) != _sellsAlcohol ||
+              (currentBusiness['offers_sports_activities'] == true) != _offersSportsActivities);
+      List<Map<String, dynamic>>? reviewedDeals;
+      if (categoryChanged) {
+        final deals = await DiscountService().getAllTrustedPartnerDiscounts(partnerId);
+        if (!mounted) return;
+        if (deals.isNotEmpty) {
+          final lockedCategory = _sellsFreshProduce
+              ? kFreshLocalCategory
+              : _sellsAlcohol
+                  ? kLocalSipsCategory
+                  : _offersSportsActivities
+                      ? kLocallyActiveCategory
+                      : kLocalEatsBusinessCategories.contains(_selectedCategory)
+                          ? kLocalEatsCategory
+                          : null;
+          reviewedDeals = await showDialog<List<Map<String, dynamic>>>(
+            context: context,
+            barrierDismissible: false,
+            builder: (context) => PartnerDealReviewDialog(
+              partnerId: partnerId,
+              lockedCategory: lockedCategory,
+              website: _websiteCtrl.text.trim(),
+              deals: deals,
+            ),
+          );
+          if (reviewedDeals == null || !mounted) return;
+        } else {
+          reviewedDeals = [];
+        }
+      }
 
       // Upload logo if a new one was selected
       final logoUrl = await _uploadLogo(partnerId);
       final response = await _supabase.rpc(
-        'admin_update_trusted_partner',
+        categoryChanged
+            ? 'admin_update_partner_with_reviewed_deals'
+            : 'admin_update_trusted_partner',
         params: {
           'payload': {
             'partner_id': partnerId,
@@ -318,6 +361,8 @@ class _AdminEditPartnerScreenState extends State<AdminEditPartnerScreen> {
                 : '',
             if (logoUrl case final value?) 'logo_url': value,
           },
+          if (categoryChanged) 'reviewed_deals': reviewedDeals,
+          if (categoryChanged) 'expected_partner': currentBusiness,
         },
       );
 
@@ -329,6 +374,7 @@ class _AdminEditPartnerScreenState extends State<AdminEditPartnerScreen> {
       }
 
       _logger.i('Partner $partnerId updated successfully');
+      if (categoryChanged) DiscountService.invalidateActiveDealsCache();
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -348,6 +394,11 @@ class _AdminEditPartnerScreenState extends State<AdminEditPartnerScreen> {
           errorStr.contains('ClientException') ||
           errorStr.contains('Failed host lookup')) {
         message = 'No internet connection. Please check your network and try again.';
+      } else if (errorStr.contains('DEAL_ACTIVITY_PENDING')) {
+        message = 'Resolve pending deal requests and payments before changing the category.';
+      } else if (errorStr.contains('DEAL_REVIEW_CHANGED') ||
+          errorStr.contains('PARTNER_DEAL_REVIEW_REQUIRED')) {
+        message = 'The partner or deals changed. Reload and review them again.';
       }
 
       ScaffoldMessenger.of(context).showSnackBar(

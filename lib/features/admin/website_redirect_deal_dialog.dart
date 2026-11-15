@@ -16,12 +16,16 @@ class WebsiteRedirectDealDialog extends StatefulWidget {
   final String trustedPartnerId;
   final Discount? existing;
   final String? lockedDealCategory;
+  final bool reviewMode;
+  final String? websiteForReview;
 
   const WebsiteRedirectDealDialog({
     super.key,
     required this.trustedPartnerId,
     this.existing,
     this.lockedDealCategory,
+    this.reviewMode = false,
+    this.websiteForReview,
   });
 
   @override
@@ -61,7 +65,13 @@ class _WebsiteRedirectDealDialogState extends State<WebsiteRedirectDealDialog> {
             ? existing!.dealCategory
             : 'Other');
     _existingImageUrl = existing?.imageUrl;
-    _loadWebsite();
+    if (widget.reviewMode) {
+      _rawWebsite = widget.websiteForReview;
+      _websiteUri = WebsiteRedirectService.normalizeWebsiteUrl(_rawWebsite);
+      _loadingWebsite = false;
+    } else {
+      _loadWebsite();
+    }
   }
 
   @override
@@ -131,6 +141,29 @@ class _WebsiteRedirectDealDialogState extends State<WebsiteRedirectDealDialog> {
       return;
     }
 
+    if (widget.reviewMode) {
+      Navigator.of(context).pop(<String, dynamic>{
+        'name': _titleController.text.trim(),
+        'description': _descriptionController.text.trim(),
+        'item_name': 'Website',
+        'item_price': 0,
+        'percentage': 0,
+        'fixed_amount': null,
+        'deal_type': Discount.websiteRedirectType,
+        'custom_data': null,
+        'requires_manual_price': false,
+        'is_weight_based': false,
+        'is_bill_discount': false,
+        'is_once_off': false,
+        'bill_discount_data': null,
+        'image_url': _existingImageUrl,
+        'schedule_data': null,
+        'deal_category': _category,
+        'offers_delivery': false,
+      });
+      return;
+    }
+
     setState(() => _saving = true);
     try {
       var imageUrl = _existingImageUrl;
@@ -143,6 +176,7 @@ class _WebsiteRedirectDealDialogState extends State<WebsiteRedirectDealDialog> {
       if (_isEdit) {
         await service.updateDiscount(
           widget.existing!.id,
+          expectedTermsRevision: widget.existing!.termsRevision,
           name: title,
           description: description,
           dealCategory: _category,
@@ -236,7 +270,7 @@ class _WebsiteRedirectDealDialogState extends State<WebsiteRedirectDealDialog> {
                     onChanged: (v) => setState(() => _category = v ?? 'Other'),
                   ),
                 const SizedBox(height: 16),
-                _buildImagePicker(),
+                if (!widget.reviewMode) _buildImagePicker(),
               ],
             ),
           ),
@@ -244,7 +278,9 @@ class _WebsiteRedirectDealDialogState extends State<WebsiteRedirectDealDialog> {
       ),
       actions: [
         TextButton(
-          onPressed: _saving ? null : () => Navigator.of(context).pop(false),
+          onPressed: _saving
+              ? null
+              : () => Navigator.of(context).pop(widget.reviewMode ? null : false),
           child: const Text('Cancel'),
         ),
         ElevatedButton(

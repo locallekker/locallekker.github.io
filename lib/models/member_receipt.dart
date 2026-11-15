@@ -26,12 +26,14 @@ class MemberReceipt {
       id: json['id'],
       memberId: json['member_id'],
       virtualReceiptId: json['virtual_receipt_id'],
-      receiptNumber: json['receipt_number'],
+      receiptNumber: json['receipt_number'] ?? json['title'],
       businessName: json['business_name'],
       amount: (json['amount'] as num).toDouble(),
-      transactionDate: DateTime.parse(json['transaction_date']),
-      status: json['status'],
-      savedAt: DateTime.parse(json['saved_at']),
+      transactionDate: DateTime.parse(
+        json['transaction_date'] ?? json['receipt_date'],
+      ),
+      status: json['status'] ?? 'saved',
+      savedAt: DateTime.parse(json['saved_at'] ?? json['created_at']),
     );
   }
 
@@ -40,12 +42,12 @@ class MemberReceipt {
       'id': id,
       'member_id': memberId,
       'virtual_receipt_id': virtualReceiptId,
-      'receipt_number': receiptNumber,
+      'title': receiptNumber,
+      'receipt_type': 'virtual',
       'business_name': businessName,
       'amount': amount,
-      'transaction_date': transactionDate.toIso8601String(),
-      'status': status,
-      'saved_at': savedAt.toIso8601String(),
+      'receipt_date': transactionDate.toIso8601String(),
+      'created_at': savedAt.toIso8601String(),
     };
   }
 }

@@ -20,6 +20,26 @@ enabled = true
 verify_jwt = false
 entrypoint = "./functions/scheduled-renewal-worker/index.ts"
 
+[functions.subscription-billing]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/subscription-billing/index.ts"
+
+[functions.paystack-webhook]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/paystack-webhook/index.ts"
+
+[functions.paystack-proxy]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/paystack-proxy/index.ts"
+
+[functions.scheduled-server-renewal-worker]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/scheduled-server-renewal-worker/index.ts"
+
 [functions.scheduled-payment-reconciliation-worker]
 enabled = true
 verify_jwt = false

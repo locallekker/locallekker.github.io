@@ -6,6 +6,7 @@ import 'package:logger/logger.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter/foundation.dart';
 import 'package:local_lekker/services/web_checkout.dart';
+import 'subscription_billing_service.dart';
 
 /// Thrown when a member tries to save more than [PaystackService.maxSavedCards]
 /// cards. The UI catches this to prompt the member to delete an existing card
@@ -243,8 +244,10 @@ class PaystackService {
               // hosted checkout shows the new-card entry form instead of
               // defaulting to the member's saved card.
   }) async {
-    // In development mode, simulate successful payment without Paystack redirect
-    if (_isDevelopmentMode) {
+    // Membership testing uses the Paystack sandbox, never client-only activation.
+    if (_isDevelopmentMode &&
+        extraMetadata?['payment_type'] != 'subscription' &&
+        extraMetadata?['payment_type'] != 'promotion_intro') {
       _logger.i(
         'PaystackService: Development mode - Simulating successful one-time payment',
       );
@@ -254,6 +257,20 @@ class PaystackService {
         'authorization_url': 'https://example.com/payment/success',
         'reference': 'dev_${DateTime.now().millisecondsSinceEpoch}',
       };
+    }
+
+    if (extraMetadata?['payment_type'] == 'subscription' ||
+        extraMetadata?['payment_type'] == 'promotion_intro') {
+      final result = await SubscriptionBillingService().request(
+        action: 'checkout',
+        useCustomerCode: useCustomerCode,
+        promotionId: extraMetadata?['promotion_id'] as String?,
+        participantId: extraMetadata?['participant_id'] as String?,
+      );
+      if (result.authorizationUrl == null) {
+        throw Exception(result.message ?? 'A membership payment is already being processed. Please check its status.');
+      }
+      return {'authorization_url': result.authorizationUrl!, 'reference': result.reference};
     }
 
     try {
@@ -338,25 +355,28 @@ class PaystackService {
             : itemName,
       );
 
-      // Log full payload for debugging
       if (kDebugMode) {
         print('🔍 PAYSTACK INIT PAYLOAD: ${jsonEncode(paymentData)}');
       }
       _logger.i('🔍 Full payment data: $paymentData');
 
-      // Initialize transaction via server-side proxy.
-      // Use a 10s per-attempt timeout so two attempts + delay (10+2+10=22s)
-      // complete well within the 35s outer timeout applied by the caller.
+      // The server retains the attempt if submission is interrupted.
       final initResponse = await _proxyRequest(
         path: '/transaction/initialize',
         method: 'POST',
         body: paymentData,
-        requestTimeout: const Duration(seconds: 10),
+        maxRetries: 0,
+        requestTimeout: const Duration(seconds: 30),
       );
 
       if (initResponse.statusCode == 200) {
         final responseData = jsonDecode(initResponse.body);
-        final authorizationUrl = responseData['data']['authorization_url'] as String;
+        final data = responseData['data'] as Map<String, dynamic>;
+        final authorizationUrl = data['authorization_url'] as String?;
+        final reference = data['reference'] as String?;
+        if (authorizationUrl == null || reference == null) {
+          throw Exception('An existing deal payment is being confirmed. Do not start another payment.');
+        }
 
         _logger.i('PaystackService: Payment initialized successfully');
         _logger.i('PaystackService: Transaction reference: $transactionReference');
@@ -368,7 +388,7 @@ class PaystackService {
         }
         return {
           'authorization_url': authorizationUrl,
-          'reference': transactionReference,
+          'reference': reference,
         };
       } else {
         _logger.e(
@@ -1275,12 +1295,28 @@ class PaystackService {
     Map<String, dynamic>? extraMetadata,
   }) async {
     // In development mode, simulate successful payment
-    if (_isDevelopmentMode) {
+    if (_isDevelopmentMode &&
+        !['subscription', 'subscription_renewal', 'promotion_intro'].contains(paymentType)) {
       _logger.i(
         'PaystackService: Development mode - Simulating successful saved card charge',
       );
       await Future.delayed(const Duration(seconds: 1));
       return 'success';
+    }
+
+    if (paymentType == 'subscription' ||
+        paymentType == 'subscription_renewal' ||
+        paymentType == 'promotion_intro') {
+      final result = await SubscriptionBillingService().request(
+        action: 'charge',
+        authorizationCode: authorizationCode,
+        cvv: cvv,
+        promotionId: extraMetadata?['promotion_id'] as String?,
+        participantId: extraMetadata?['participant_id'] as String?,
+      );
+      if (result.paid) return 'success';
+      throw Exception(result.message ??
+          'Payment is being confirmed. Do not start another membership payment.');
     }
 
     try {
@@ -1319,6 +1355,8 @@ class PaystackService {
         path: '/transaction/charge_authorization',
         method: 'POST',
         body: body,
+        maxRetries: 0,
+        requestTimeout: const Duration(seconds: 30),
       );
 
       if (chargeResponse.statusCode == 200) {
@@ -1328,7 +1366,7 @@ class PaystackService {
         if (status == 'success') {
           _logger.i('PaystackService: Saved card charged successfully');
           return 'success';
-        } else {
+        } else if (status == 'failed') {
           final gatewayResponse = responseData['data']?['gateway_response']
               as String? ?? responseData['message'] as String? ?? status;
           _logger.w(
@@ -1336,17 +1374,29 @@ class PaystackService {
           );
           // Return the gateway message so the UI can surface it.
           return 'failed:$gatewayResponse';
+        } else {
+          _logger.w('Deal payment is not final: $status');
+          return 'pending';
         }
       } else {
         throw Exception('Failed to charge saved card: ${chargeResponse.body}');
       }
     } catch (e) {
       _logger.e('PaystackService: Error charging saved card: $e');
-      return null;
+      return 'pending';
     }
   }
 
-  Future<Map<String, dynamic>?> verifyTransaction(String reference) async {
+  Future<Map<String, dynamic>?> verifyTransaction(
+    String reference, {
+    String? dealId,
+  }) async {
+    if (reference.startsWith('ll-sub-')) {
+      final result = await SubscriptionBillingService().request(
+        action: 'verify', reference: reference,
+      );
+      return result.paid ? result.transaction : null;
+    }
     try {
       final response = await _proxyRequest(
         path: '/transaction/verify/$reference',
@@ -1358,6 +1408,18 @@ class PaystackService {
 
         if (status == 'success') {
           final data = responseData['data'] as Map<String, dynamic>;
+          if (data['reference'] != reference) {
+            throw const FormatException('Payment verification returned a different reference');
+          }
+          if (dealId != null) {
+            final metadata = data['metadata'];
+            if (metadata is! Map ||
+                metadata['deal_authorization_id'] != dealId ||
+                metadata['user_id'] != Supabase.instance.client.auth.currentUser?.id ||
+                metadata['payment_type'] != 'one_time_payment') {
+              throw const FormatException('Payment verification does not match this deal');
+            }
+          }
           // Helpful diagnostics to confirm settlement routing
           try {
             final amount = (data['amount'] ?? 0) as int; // in kobo
@@ -1493,21 +1555,7 @@ class PaystackService {
     }
   }
 
-  /// Initialize a subscription payment with Paystack
-  ///
-  /// This method creates a subscription using a pre-configured plan code from
-  /// the Paystack dashboard. The plan must be created in your Paystack account first.
-  ///
-  /// Plans enable auto-renewal - Paystack will automatically charge the customer
-  /// on each billing cycle and send webhook notifications.
-  ///
-  /// [plan] - Name/identifier for internal tracking (e.g., 'monthly', 'annual')
-  /// [amount] - Subscription amount in Rands (will be converted to kobo)
-  /// [frequency] - Billing frequency in months (1 = monthly, 12 = annual)
-  /// [userId] - User ID for tracking
-  /// [userEmail] - Customer email for Paystack
-  ///
-  /// Returns the authorization URL to redirect user to for payment
+  /// Opens membership checkout using a server-priced billing obligation.
   Future<Map<String, String>?> initializeSubscription({
     required String plan,
     required double amount,
@@ -1516,341 +1564,16 @@ class PaystackService {
     required String userEmail,
     bool useCustomerCode = true,
   }) async {
-    // In development mode, simulate successful subscription initialization
-    if (_isDevelopmentMode) {
-      _logger.i(
-        'PaystackService: Development mode - Simulating subscription initialization',
-      );
-      await Future.delayed(const Duration(seconds: 1));
-      return {'authorization_url': 'https://example.com/subscription/init', 'reference': 'dev_ref_${userId}'};
+    if (frequency != 1) {
+      throw UnsupportedError('This membership frequency requires a server billing configuration.');
     }
-
-    var setupClaimed = false;
-    String? setupReference;
-    try {
-      // Get the plan code from environment variables based on frequency
-      String? planCode = _getPlanCode(frequency);
-
-      if (planCode == null || planCode.isEmpty) {
-        // No env-configured plan code — try to auto-create/fetch one on
-        // Paystack (matches the original behaviour before the promo refactor).
-        // This keeps real subscription auto-renewal working without requiring
-        // PAYSTACK_MONTHLY_PLAN_CODE to be set in .env.
-        _logger.w(
-          'PaystackService: PAYSTACK_MONTHLY_PLAN_CODE not set — attempting '
-          'to auto-create/fetch a Paystack plan for $plan ($frequency months).',
-        );
-        planCode = await _ensurePaystackPlan(
-          plan: plan,
-          amount: amount,
-          frequency: frequency,
-        );
-      }
-
-      if (planCode == null || planCode.isEmpty) {
-        // Auto-create also failed — fall back to a one-off transaction so the
-        // member can still pay. SubscriptionService.processManualPayment will
-        // activate the 30-day local subscription on success. The member will
-        // need to renew manually until a plan code is available.
-        _logger.w(
-          'PaystackService: Plan auto-create failed — falling back to one-off '
-          'transaction. Add PAYSTACK_MONTHLY_PLAN_CODE to .env to re-enable '
-          'Paystack-side auto-renewal.',
-        );
-        return await startOneTimePayment(
-          itemName: 'Local Lekker $plan subscription',
-          itemDescription: 'Local Lekker $plan subscription',
-          amount: amount,
-          userId: userId,
-          userEmail: userEmail,
-          useCustomerCode: useCustomerCode,
-          extraMetadata: {
-            'subscription_type': 'manual_renewal',
-            'frequency': frequency,
-            'plan_name': plan,
-            'payment_type': 'subscription',
-            'fallback_reason': 'no_plan_code_available',
-          },
-        );
-      }
-
-      _logger.i(
-        'PaystackService: Initializing subscription with plan: $planCode, amount: ${(amount * 100).round()} kobo',
-      );
-
-      // For "new card" checkout, skip attaching existing customer_code so
-      // Paystack opens the full card details form.
-      String? customerCode;
-      if (useCustomerCode) {
-        // Ensure we have a named Paystack customer for proper dashboard display.
-        customerCode = await _ensurePaystackCustomer(
-          userId: userId,
-          email: userEmail,
-        );
-      }
-
-      final customerIdentifier = customerCode ?? userEmail;
-      if (await _hasActivePaystackSubscription(customerIdentifier)) {
-        throw Exception(
-          'Failed to initialize subscription: active_subscription_exists - '
-          'An existing Paystack subscription must be resolved before starting another.',
-        );
-      }
-
-      final claimResult = await Supabase.instance.client.rpc(
-        'claim_paystack_subscription_setup',
-        params: {'p_user_id': userId},
-      ) as bool?;
-      if (claimResult != true) {
-        throw Exception(
-          'Failed to initialize subscription: checkout_in_progress - '
-          'Another subscription checkout is already in progress.',
-        );
-      }
-      setupClaimed = true;
-
-      // Generate the transaction reference upfront so we can return it
-      final reference = 'sub_${userId}_${DateTime.now().millisecondsSinceEpoch}';
-      setupReference = reference;
-
-      final referenceRegistered = await Supabase.instance.client.rpc(
-        'register_paystack_subscription_setup_reference',
-        params: {'p_user_id': userId, 'p_reference': reference},
-      ) as bool?;
-      if (referenceRegistered != true) {
-        throw Exception(
-          'Failed to initialize subscription: checkout_reference_not_registered - '
-          'The checkout could not be safely associated with this account.',
-        );
-      }
-
-      // Initialize subscription using Paystack's subscription API
-      final response = await _proxyRequest(
-        path: '/transaction/initialize',
-        method: 'POST',
-        body: {
-          'email': userEmail,
-          'amount': (amount * 100).round(), // Convert to kobo (R99 = 9900 kobo)
-          'plan': planCode, // Use the actual plan code from environment
-          if (customerCode != null && customerCode.isNotEmpty)
-            'customer': customerCode,
-          'reference': reference,
-          'callback_url':
-              paystackCallbackUrl(),
-          'channels': ['card'], // Enable card payments
-          'metadata': {
-            'user_id': userId,
-            'subscription_type': 'recurring',
-            'frequency': frequency,
-            'plan_name': plan,
-            'plan_code': planCode,
-            'payment_type': 'subscription',
-          },
-          'customizations': _buildCheckoutCustomizations(
-            title: 'Local Lekker',
-            description: 'Complete your $plan membership checkout',
-          ),
-        },
-      );
-
-      if (response.statusCode == 200) {
-        final responseData = jsonDecode(response.body);
-        final authorizationUrl = responseData['data']['authorization_url'];
-
-        _logger.i('PaystackService: Subscription initialized successfully with reference: $reference');
-        return {'authorization_url': authorizationUrl, 'reference': reference};
-      } else {
-        // Parse the error for better diagnostics
-        String errorDetail = response.body;
-        String? parsedMessage;
-        try {
-          final errorData = jsonDecode(response.body);
-          final errorMessage = errorData['message'] ?? errorData['error'] ?? '';
-          final errorCode = errorData['code'] ?? '';
-          parsedMessage = errorMessage.toString();
-          if (errorCode == 'invalid_Key' || parsedMessage.contains('Invalid key')) {
-            _logger.e(
-              'PaystackService: INVALID KEY ERROR - The PAYSTACK_SECRET_KEY in Supabase Edge Function secrets is invalid. '
-              'Please verify: 1) Key starts with sk_live_ or sk_test_, '
-              '2) Key is not expired/revoked in Paystack Dashboard, '
-              '3) Key was set correctly via: supabase secrets set PAYSTACK_SECRET_KEY=sk_live_xxx',
-            );
-            throw Exception(
-              'Payment service configuration error. Please contact support. '
-              '(Ref: invalid_api_key)',
-            );
-          }
-        } catch (e) {
-          if (e.toString().contains('invalid_api_key')) rethrow;
-          // Could not parse error JSON, use raw body
-        }
-
-        // Tag errors so the UI layer can show accurate messages
-        // (the proxy returns a synthetic 503 with this error text on real
-        // network failures; everything else is a server / config issue).
-        final isNetworkFailure = response.statusCode == 503 &&
-            (parsedMessage?.toLowerCase().contains('connection failed') ?? false);
-        final isAuthFailure = response.statusCode == 401;
-
-        if (isNetworkFailure) {
-          throw Exception(
-            'Failed to initialize subscription: network_error - ${parsedMessage ?? 'Connection failed'}',
-          );
-        }
-        if (isAuthFailure) {
-          throw Exception(
-            'Failed to initialize subscription: auth_error - ${parsedMessage ?? 'Session expired. Please sign in again.'}',
-          );
-        }
-        throw Exception(
-          'Failed to initialize subscription: server_error (${response.statusCode}) - ${parsedMessage?.isNotEmpty == true ? parsedMessage : errorDetail}',
-        );
-      }
-    } catch (e) {
-      _logger.e('PaystackService: Error initializing subscription: $e');
-      if (setupClaimed) {
-        try {
-          if (setupReference == null) {
-            await Supabase.instance.client.rpc(
-              'release_paystack_subscription_setup',
-              params: {'p_user_id': userId},
-            );
-          } else {
-            await Supabase.instance.client.rpc(
-              'release_paystack_subscription_setup_for_reference',
-              params: {
-                'p_user_id': userId,
-                'p_reference': setupReference,
-              },
-            );
-          }
-        } catch (releaseError) {
-          _logger.w('Could not release subscription checkout claim: $releaseError');
-        }
-      }
-      // Preserve already-tagged messages so we don't double-wrap them
-      if (e is Exception && e.toString().contains('Failed to initialize subscription')) {
-        rethrow;
-      }
-      throw Exception('Failed to initialize subscription: unexpected_error - $e');
+    final result = await SubscriptionBillingService().request(
+      action: 'checkout', useCustomerCode: useCustomerCode,
+    );
+    if (result.authorizationUrl == null) {
+      throw Exception(result.message ?? 'Your membership payment is already being confirmed.');
     }
-  }
-
-  /// Auto-create (or look up) a Paystack plan when no env-configured plan
-  /// code is available. Mirrors the original behaviour of REV_01's
-  /// `startSubscription` so subscription auto-renewal keeps working out of
-  /// the box without requiring PAYSTACK_MONTHLY_PLAN_CODE in .env.
-  ///
-  /// Returns the plan code on success, or null if both creation and lookup
-  /// fail (callers should fall back to a one-off transaction).
-  Future<String?> _ensurePaystackPlan({
-    required String plan,
-    required double amount,
-    required int frequency,
-  }) async {
-    final interval = frequency == 12
-        ? 'annually'
-        : frequency == 3
-            ? 'quarterly'
-            : frequency == 6
-                ? 'biannually'
-                : 'monthly';
-    final planName = 'Local Lekker $plan Subscription';
-    final amountKobo = (amount * 100).round();
-
-    try {
-      // Try to create the plan. Paystack accepts duplicate names but returns
-      // an error code we can recover from by listing existing plans.
-      final createResponse = await _proxyRequest(
-        path: '/plan',
-        method: 'POST',
-        body: {
-          'name': planName,
-          'interval': interval,
-          'amount': amountKobo,
-          'currency': 'ZAR',
-          'description': '$plan subscription plan',
-        },
-      );
-
-      if (createResponse.statusCode == 200 || createResponse.statusCode == 201) {
-        try {
-          final data = jsonDecode(createResponse.body);
-          final code = data['data']?['plan_code'] as String?;
-          if (code != null && code.isNotEmpty) {
-            _logger.i('PaystackService: Auto-created Paystack plan $code ($planName)');
-            return code;
-          }
-        } catch (e) {
-          _logger.w('PaystackService: Could not parse plan create response: $e');
-        }
-      } else {
-        _logger.w(
-          'PaystackService: Plan create returned ${createResponse.statusCode}: ${createResponse.body}',
-        );
-      }
-
-      // Fall back to listing plans and finding ours by name + interval + amount.
-      final listResponse = await _proxyRequest(
-        path: '/plan?perPage=100',
-      );
-
-      if (listResponse.statusCode == 200) {
-        final data = jsonDecode(listResponse.body);
-        final plans = (data['data'] as List?) ?? const [];
-        for (final p in plans) {
-          if (p is Map &&
-              p['name'] == planName &&
-              p['interval'] == interval &&
-              (p['amount'] as num?)?.toInt() == amountKobo) {
-            final code = p['plan_code'] as String?;
-            if (code != null && code.isNotEmpty) {
-              _logger.i('PaystackService: Found existing Paystack plan $code ($planName)');
-              return code;
-            }
-          }
-        }
-        // Loose match by name only as a last resort
-        for (final p in plans) {
-          if (p is Map && p['name'] == planName) {
-            final code = p['plan_code'] as String?;
-            if (code != null && code.isNotEmpty) {
-              _logger.w(
-                'PaystackService: Using loose-matched plan $code for $planName (amount/interval differ)',
-              );
-              return code;
-            }
-          }
-        }
-      } else {
-        _logger.w(
-          'PaystackService: Plan list returned ${listResponse.statusCode}: ${listResponse.body}',
-        );
-      }
-    } catch (e) {
-      _logger.e('PaystackService: _ensurePaystackPlan failed: $e');
-    }
-    return null;
-  }
-
-  /// Get the Paystack plan code from environment variables based on billing frequency
-  String? _getPlanCode(int frequencyMonths) {
-    try {
-      switch (frequencyMonths) {
-        case 1:
-          return dotenv.env['PAYSTACK_MONTHLY_PLAN_CODE'];
-        case 12:
-          return dotenv.env['PAYSTACK_ANNUAL_PLAN_CODE'];
-        default:
-          _logger.w(
-            'PaystackService: No plan code configured for $frequencyMonths months',
-          );
-          return null;
-      }
-    } catch (e) {
-      _logger.e('PaystackService: Error getting plan code: $e');
-      return null;
-    }
+    return {'authorization_url': result.authorizationUrl!, 'reference': result.reference};
   }
 
   /// Check subscription status from Paystack
@@ -2229,7 +1952,7 @@ class PaystackService {
 
   /// Initialize payment for adding a payment method (card tokenization)
   /// This creates a small charge (R1.00) to tokenize the card
-  Future<String?> initializePaymentMethod({
+  Future<Map<String, String>?> initializePaymentMethod({
     required String userId,
     required String userEmail,
     int amount = 100, // Default R1.00 in kobo for tokenization
@@ -2240,7 +1963,10 @@ class PaystackService {
         'PaystackService: Development mode - Simulating payment method initialization',
       );
       await Future.delayed(const Duration(milliseconds: 500));
-      return 'https://example.com/payment-method/init';
+      return {
+        'authorization_url': 'https://example.com/payment-method/init',
+        'reference': 'pm_development',
+      };
     }
 
     try {
@@ -2267,10 +1993,11 @@ class PaystackService {
 
       if (response.statusCode == 200) {
         final responseData = jsonDecode(response.body);
-        final authorizationUrl = responseData['data']['authorization_url'];
+        final authorizationUrl = responseData['data']['authorization_url'] as String;
+        final reference = responseData['data']['reference'] as String;
 
         _logger.i('PaystackService: Payment method initialization successful');
-        return authorizationUrl;
+        return {'authorization_url': authorizationUrl, 'reference': reference};
       } else {
         throw Exception(
           'Failed to initialize payment method: ${response.body}',
@@ -2280,6 +2007,23 @@ class PaystackService {
       _logger.e('PaystackService: Error initializing payment method: $e');
       throw Exception('Failed to initialize payment method: $e');
     }
+  }
+
+  Future<Map<String, dynamic>> verifyPaymentMethod(String reference, String userId) async {
+    final details = await verifyTransaction(reference);
+    final metadata = details?['metadata'];
+    final authorization = details?['authorization'];
+    if (details == null || metadata is! Map ||
+        metadata['user_id'] != userId ||
+        metadata['payment_type'] != 'payment_method_setup') {
+      throw const FormatException('Card verification does not match this card setup');
+    }
+    if (authorization is! Map || authorization['reusable'] != true ||
+        authorization['authorization_code'] is! String ||
+        (authorization['authorization_code'] as String).isEmpty) {
+      throw const FormatException('This payment method cannot be saved for future payments');
+    }
+    return details;
   }
 
   Future<Map<String, dynamic>?> verifyStoredCard(
@@ -2588,25 +2332,4 @@ class PaystackService {
     }
   }
 
-  Future<bool> _hasActivePaystackSubscription(String customerCodeOrEmail) async {
-    final response = await _proxyRequest(
-      path:
-          '/subscription?customer=${Uri.encodeQueryComponent(customerCodeOrEmail)}&perPage=100',
-    );
-    if (response.statusCode != 200) {
-      throw Exception(
-        'Could not verify existing Paystack subscriptions (${response.statusCode})',
-      );
-    }
-
-    final responseData = jsonDecode(response.body) as Map<String, dynamic>;
-    final subscriptions = responseData['data'] as List<dynamic>? ?? const [];
-    return subscriptions.any((subscription) {
-      if (subscription is! Map<String, dynamic>) return false;
-      final status = subscription['status']?.toString().toLowerCase();
-        return status == 'active' ||
-          status == 'attention' ||
-          status == 'non-renewing';
-    });
-  }
 }

@@ -317,6 +317,7 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
           // Update the discount with all the fields
           await _discountService.updateDiscount(
             discount.id,
+            expectedTermsRevision: discount.termsRevision,
             name: result['name'],
             description: result['description'],
             itemName: result['itemName'],
@@ -511,26 +512,11 @@ class _DiscountManagementPageState extends State<DiscountManagementPage> {
       setState(() {
         final index = _discounts.indexWhere((d) => d.id == discount.id);
         if (index != -1) {
-          _discounts[index] = Discount(
-            id: discount.id,
-            trustedPartnerId: discount.trustedPartnerId,
-            name: discount.name,
-            description: discount.description,
-            itemName: discount.itemName,
-            itemPrice: discount.itemPrice,
-            percentage: discount.percentage,
-            fixedAmount: discount.fixedAmount,
-            dealType: discount.dealType,
-            customData: discount.customData,
-            dealCategory: discount.dealCategory,
-            isActive: !discount.isActive,
-            createdAt: discount.createdAt,
-            updatedAt: DateTime.now(),
-            imageUrl: discount.imageUrl, // Preserve image URL
-            isWeightBased: discount.isWeightBased,
-            isBillDiscount: discount.isBillDiscount,
-            billDiscountData: discount.billDiscountData,
-          );
+          _discounts[index] = Discount.fromJson({
+            ...discount.toJson(),
+            'is_active': !discount.isActive,
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          });
         }
       });
 
@@ -2741,12 +2727,14 @@ class EditDiscountDialog extends StatefulWidget {
   final Discount discount;
   final String? trustedPartnerId;
   final String? lockedDealCategory;
+  final bool reviewMode;
 
   const EditDiscountDialog({
     super.key,
     required this.discount,
     this.trustedPartnerId,
     this.lockedDealCategory,
+    this.reviewMode = false,
   });
 
   @override
@@ -2820,7 +2808,12 @@ class _EditDiscountDialogState extends State<EditDiscountDialog> {
     }
 
     // Determine discount type from existing discount
-    if (widget.discount.dealType == 'buyGet' ||
+    if (widget.reviewMode &&
+        (widget.discount.isRestaurantDeal ||
+            widget.discount.isWebsiteRedirect ||
+            widget.discount.isBookingRedirect)) {
+      _selectedType = DiscountType.none;
+    } else if (widget.discount.dealType == 'buyGet' ||
         widget.discount.dealType == 'buy_get') {
       _selectedType = DiscountType.buyGet;
       if (widget.discount.customData != null) {
@@ -2840,6 +2833,9 @@ class _EditDiscountDialogState extends State<EditDiscountDialog> {
       _percentDiscountController.text = widget.discount.percentage.toString();
     } else if (widget.discount.isFreeDelivery) {
       _selectedType = DiscountType.freeDelivery;
+      if (widget.reviewMode) {
+        _itemPriceController.text = widget.discount.itemPrice.toString();
+      }
     } else if (widget.discount.isBillDiscount) {
       _selectedType = DiscountType.billDiscount;
       // Pre-fill bill discount data
@@ -2964,7 +2960,6 @@ class _EditDiscountDialogState extends State<EditDiscountDialog> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Dropdown for discount type - READ ONLY (shows current type)
                 DropdownButtonFormField<DiscountType>(
                   isExpanded: true,
                   initialValue: _selectedType,
@@ -2972,41 +2967,55 @@ class _EditDiscountDialogState extends State<EditDiscountDialog> {
                     labelText: 'Discount Type',
                     border: OutlineInputBorder(),
                   ),
-                  items: const [
-                    DropdownMenuItem(
+                  items: [
+                    if (widget.reviewMode)
+                      const DropdownMenuItem(
+                        value: DiscountType.none,
+                        child: Text('-- Select Type --'),
+                      ),
+                    const DropdownMenuItem(
                       value: DiscountType.percentage,
                       child: Text('Percentage'),
                     ),
-                    DropdownMenuItem(
+                    const DropdownMenuItem(
                       value: DiscountType.fixedAmount,
                       child: Text('Fixed Amount'),
                     ),
-                    DropdownMenuItem(
+                    const DropdownMenuItem(
                       value: DiscountType.onceOff,
                       child: Text('Once-Off Deal'),
                     ),
-                    DropdownMenuItem(
+                    const DropdownMenuItem(
                       value: DiscountType.weight,
                       child: Text('Weight'),
                     ),
-                    DropdownMenuItem(
+                    const DropdownMenuItem(
                       value: DiscountType.billDiscount,
                       child: Text('Bill Discount'),
                     ),
-                    DropdownMenuItem(
+                    const DropdownMenuItem(
                       value: DiscountType.buyGet,
                       child: Text('Buy This Get That'),
                     ),
-                    DropdownMenuItem(
+                    const DropdownMenuItem(
                       value: DiscountType.percentItem,
                       child: Text('% Off Item (Manual Price)'),
                     ),
-                    DropdownMenuItem(
+                    const DropdownMenuItem(
                       value: DiscountType.freeDelivery,
                       child: Text('Free Delivery (normal price)'),
                     ),
                   ],
-                  onChanged: null, // Disabled - cannot change type
+                  onChanged: widget.reviewMode
+                      ? (value) => setState(() {
+                          _selectedType = value ?? DiscountType.none;
+                        })
+                      : null,
+                  validator: widget.reviewMode
+                      ? (value) => value == null || value == DiscountType.none
+                          ? 'Please select a discount type'
+                          : null
+                      : null,
                 ),
                 CheckboxListTile(
                   contentPadding: EdgeInsets.zero,
@@ -3582,6 +3591,7 @@ class _EditDiscountDialogState extends State<EditDiscountDialog> {
                   ),
                 ],
 
+                if (!widget.reviewMode) ...[
                 // Image Upload Section - Available for ALL deal types
                 const SizedBox(height: 16),
                 const Text(
@@ -3743,6 +3753,7 @@ class _EditDiscountDialogState extends State<EditDiscountDialog> {
                     ],
                   ),
                 ),
+                ],
                 const SizedBox(height: 16),
 
                 // Schedule section
@@ -3887,7 +3898,7 @@ class _EditDiscountDialogState extends State<EditDiscountDialog> {
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('Cancel'),
         ),
-        TextButton(
+        if (!widget.reviewMode) TextButton(
           onPressed: _deleteDeal,
           style: TextButton.styleFrom(foregroundColor: Colors.red),
           child: const Text('Delete Deal'),
@@ -4069,7 +4080,8 @@ class _EditDiscountDialogState extends State<EditDiscountDialog> {
       double itemPrice = 0.0;
       double percentage = 0.0;
       double? fixedAmount;
-      final bool isOnceOff = _isOnceOff;
+      final bool isOnceOff = _isOnceOff ||
+          (widget.reviewMode && _selectedType == DiscountType.onceOff);
       bool isBillDiscount = false;
       Map<String, dynamic>? billDiscountData;
 
@@ -4078,10 +4090,10 @@ class _EditDiscountDialogState extends State<EditDiscountDialog> {
         percentage = double.parse(_percentageController.text);
       } else if (_selectedType == DiscountType.fixedAmount) {
         itemPrice = double.parse(_itemPriceController.text);
+        fixedAmount = itemPrice - double.parse(_dealPriceController.text);
       } else if (_selectedType == DiscountType.onceOff) {
         itemPrice = double.parse(_itemPriceController.text);
         final dealPrice = double.parse(_dealPriceController.text);
-        fixedAmount = itemPrice - dealPrice;
         fixedAmount = itemPrice - dealPrice;
       } else if (_selectedType == DiscountType.weight) {
         // For weight-based deals, store price per kg as item price
@@ -4159,9 +4171,13 @@ class _EditDiscountDialogState extends State<EditDiscountDialog> {
                   ? 'percent_item'
                   : (_selectedType == DiscountType.freeDelivery
                         ? 'free_delivery'
-                        : null)),
+                        : (widget.reviewMode
+                            ? (_selectedType == DiscountType.weight
+                                ? 'weight'
+                                : 'standard')
+                            : null))),
       };
-      Navigator.of(context).pop(result);
+      if (mounted) Navigator.of(context).pop(result);
     }
   }
 }

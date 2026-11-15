@@ -18,7 +18,7 @@ import '../../services/push_notification_service.dart';
 import '../../services/subscription_service.dart';
 import '../../services/savings_service.dart';
 import '../../models/discount.dart';
-import '../../widgets/custom_qr_code.dart';
+import '../../widgets/member_qr_code.dart';
 import '../../widgets/savings_summary_card.dart';
 import '../../widgets/age_verification_dialog.dart';
 import '../../widgets/member_category_banner_row.dart';
@@ -1203,8 +1203,7 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
                           child: Center(child: CircularProgressIndicator()),
                         )
                       : qrActive
-                          ? CustomQrCode(
-                              data: qrString,
+                          ? const MemberQrCode(
                               logoAssetPath: 'assets/heart_flag.png',
                               size: 220,
                             )
@@ -2202,8 +2201,7 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
                     child: Center(child: CircularProgressIndicator()),
                   )
                 : qrActive
-                    ? CustomQrCode(
-                        data: qrString,
+                    ? const MemberQrCode(
                         logoAssetPath: 'assets/heart_flag.png',
                         size: 180,
                       )
@@ -4064,19 +4062,11 @@ class _TrustedPartnerHomePageState extends State<TrustedPartnerHomePage>
       setState(() {
         final index = _discounts.indexWhere((d) => d.id == discount.id);
         if (index != -1) {
-          _discounts[index] = Discount(
-            id: discount.id,
-            trustedPartnerId: discount.trustedPartnerId,
-            name: discount.name,
-            description: discount.description,
-            itemName: discount.itemName,
-            itemPrice: discount.itemPrice,
-            percentage: discount.percentage,
-            fixedAmount: discount.fixedAmount,
-            isActive: !discount.isActive,
-            createdAt: discount.createdAt,
-            updatedAt: DateTime.now(),
-          );
+          _discounts[index] = Discount.fromJson({
+            ...discount.toJson(),
+            'is_active': !discount.isActive,
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          });
         }
       });
 

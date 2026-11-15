@@ -16,11 +16,13 @@ import '../../services/website_redirect_service.dart';
 class BookingRedirectDealDialog extends StatefulWidget {
   final String trustedPartnerId;
   final Discount? existing;
+  final bool reviewMode;
 
   const BookingRedirectDealDialog({
     super.key,
     required this.trustedPartnerId,
     this.existing,
+    this.reviewMode = false,
   });
 
   @override
@@ -113,6 +115,29 @@ class _BookingRedirectDealDialogState
       return;
     }
 
+    if (widget.reviewMode) {
+      Navigator.of(context).pop(<String, dynamic>{
+        'name': _titleController.text.trim(),
+        'description': _descriptionController.text.trim(),
+        'item_name': 'Booking',
+        'item_price': 0,
+        'percentage': 0,
+        'fixed_amount': null,
+        'deal_type': Discount.bookingRedirectType,
+        'custom_data': {'booking_url': bookingUri.toString()},
+        'requires_manual_price': false,
+        'is_weight_based': false,
+        'is_bill_discount': false,
+        'is_once_off': false,
+        'bill_discount_data': null,
+        'image_url': _existingImageUrl,
+        'schedule_data': null,
+        'deal_category': kLocallyActiveCategory,
+        'offers_delivery': false,
+      });
+      return;
+    }
+
     setState(() => _saving = true);
     try {
       var imageUrl = _existingImageUrl;
@@ -126,6 +151,7 @@ class _BookingRedirectDealDialogState
       if (_isEdit) {
         await service.updateDiscount(
           widget.existing!.id,
+          expectedTermsRevision: widget.existing!.termsRevision,
           name: title,
           description: description,
           dealCategory: kLocallyActiveCategory,
@@ -216,7 +242,7 @@ class _BookingRedirectDealDialogState
                   child: Text(kLocallyActiveCategory),
                 ),
                 const SizedBox(height: 16),
-                OutlinedButton.icon(
+                if (!widget.reviewMode) OutlinedButton.icon(
                   onPressed: _pickImage,
                   icon: const Icon(Icons.image),
                   label: Text(
@@ -232,7 +258,9 @@ class _BookingRedirectDealDialogState
       ),
       actions: [
         TextButton(
-          onPressed: _saving ? null : () => Navigator.of(context).pop(false),
+          onPressed: _saving
+              ? null
+              : () => Navigator.of(context).pop(widget.reviewMode ? null : false),
           child: const Text('Cancel'),
         ),
         ElevatedButton(

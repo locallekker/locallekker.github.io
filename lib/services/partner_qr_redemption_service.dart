@@ -100,6 +100,7 @@ class PartnerQrRedemptionService {
           ...checkoutData,
           'checkout': checkoutDetails,
           'redemption_session_id': redemptionSessionId,
+          'terms_revision': deal.termsRevision,
         },
         'p_pos_total': _roundMoney(posTotal),
         'p_idempotency_key': idempotencyKey,

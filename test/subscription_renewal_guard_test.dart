@@ -100,14 +100,14 @@ void main() {
     expect(requests.any((r) => r.url.path.contains('/functions/')), isFalse);
   });
 
-  test('locally managed renewal still uses the shared renewal claim', () async {
+  test('locally managed renewal never submits from the app', () async {
     subscriptionCode = null;
     expect(await SubscriptionService().processSubscriptionRenewal('member'),
         isFalse);
     expect(
         requests.where(
             (r) => r.url.path.endsWith('/rpc/claim_subscription_renewal')),
-        hasLength(1));
+        isEmpty);
     expect(requests.any((r) => r.url.path.contains('/functions/')), isFalse);
   });
 
@@ -158,7 +158,7 @@ void main() {
     expect(requests.any((r) => r.url.path.contains('/functions/')), isFalse);
   });
 
-  test('cancellation after claim releases claim before any Paystack charge',
+  test('cancelled startup never takes a renewal claim or submits a charge',
       () async {
     subscriptionCode = null;
     claimRenewal = true;
@@ -169,7 +169,7 @@ void main() {
     expect(
         requests.where(
         (r) => r.url.path.endsWith('/rpc/release_subscription_renewal_claim')),
-        hasLength(1));
+        isEmpty);
     expect(requests.any((r) => r.url.path.contains('/functions/')), isFalse);
   });
 }

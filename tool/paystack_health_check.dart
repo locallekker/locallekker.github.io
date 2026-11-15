@@ -4,7 +4,7 @@ import 'package:local_lekker/services/paystack_service.dart';
 
 Future<void> main() async {
   await dotenv.load(fileName: '.env');
-  await SupabaseService.instance.initialize();
+  await SupabaseService.instance.init();
 
   final email = dotenv.env['HEALTHCHECK_EMAIL'] ?? '';
   final password = dotenv.env['HEALTHCHECK_PASSWORD'] ?? '';

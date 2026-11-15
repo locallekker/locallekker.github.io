@@ -155,6 +155,7 @@ class _CategoryEntryBannerState extends State<CategoryEntryBanner>
             child: SizedBox(
               height: widget.compact ? compactHeight : null,
               child: Stack(
+                alignment: Alignment.center,
                 children: [
                   if (widget.background != null)
                     Positioned.fill(child: widget.background!),

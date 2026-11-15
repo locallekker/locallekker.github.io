@@ -9,12 +9,14 @@ class PaymentMethodWebViewPage extends StatefulWidget {
   final String authorizationUrl;
   final String userId;
   final String userEmail;
+  final String transactionReference;
 
   const PaymentMethodWebViewPage({
     super.key,
     required this.authorizationUrl,
     required this.userId,
     required this.userEmail,
+    required this.transactionReference,
   });
 
   @override
@@ -63,38 +65,13 @@ class _PaymentMethodWebViewPageState extends State<PaymentMethodWebViewPage> {
 
     setState(() {
       _processingPayment = true;
-      _showingSuccess = true;
+      _showingSuccess = false;
     });
 
     try {
-      String? reference;
-      final uri = Uri.parse(url);
-      reference =
-          uri.queryParameters['reference'] ?? uri.queryParameters['trxref'];
-
-      if (reference == null) {
-        _logger.w('No reference found in URL, attempting to extract from path');
-        final pathSegments = uri.pathSegments;
-        if (pathSegments.isNotEmpty) {
-          reference = pathSegments.last;
-        }
-      }
-
-      if (reference == null || reference.isEmpty) {
-        throw Exception(
-          'Could not extract payment reference from callback URL',
-        );
-      }
-
-      _logger.i('Payment reference: $reference');
-
-      final paymentDetails = await _paystackService.verifyTransaction(
-        reference,
+      final paymentDetails = await _paystackService.verifyPaymentMethod(
+        widget.transactionReference, widget.userId,
       );
-
-      if (paymentDetails == null) {
-        throw Exception('Failed to verify transaction');
-      }
 
       final authorizationData = paymentDetails['authorization'];
       if (authorizationData == null) {

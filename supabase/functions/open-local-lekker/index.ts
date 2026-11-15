@@ -54,7 +54,7 @@ serve(async (req) => {
 
   if (action === "opt_out") {
     return new Response(
-      "You have opted out of Local Lekker signup reminders. You will not receive further signup reminder emails.",
+      "You have opted out of Local Lekker marketing emails. You will not receive further marketing emails, including signup reminders.",
       { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } },
     )
   }

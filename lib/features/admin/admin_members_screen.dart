@@ -109,6 +109,128 @@ class _AdminMembersScreenState extends State<AdminMembersScreen>
     }).toList();
   }
 
+  Widget _buildMemberProfilePhoto({
+    required String? imageUrl,
+    required String displayName,
+    required bool isActive,
+    required bool isDeactivated,
+  }) {
+    final photo = ProfilePhoto(
+      imageUrl: imageUrl,
+      displayName: displayName,
+      size: 40,
+      backgroundColor: isDeactivated
+          ? Colors.grey.shade300
+          : isActive
+              ? AppColors.primarySwatch.shade100
+              : Colors.orange.shade100,
+      foregroundColor: isDeactivated
+          ? Colors.grey.shade600
+          : isActive
+              ? AppColors.primarySwatch.shade700
+              : Colors.orange.shade700,
+    );
+    if (imageUrl == null || imageUrl.isEmpty) return photo;
+
+    return Semantics(
+      button: true,
+      label: 'View $displayName profile photo',
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: () => _showMemberProfilePhoto(imageUrl, displayName),
+        child: photo,
+      ),
+    );
+  }
+
+  void _showMemberProfilePhoto(String imageUrl, String memberName) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        final screenSize = MediaQuery.sizeOf(dialogContext);
+        return Dialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: screenSize.width * 0.92,
+              maxHeight: screenSize.height * 0.86,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '$memberName profile photo',
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.pop(dialogContext),
+                        icon: const Icon(Icons.close),
+                        tooltip: 'Close photo',
+                      ),
+                    ],
+                  ),
+                ),
+                Flexible(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: InteractiveViewer(
+                      minScale: 1,
+                      maxScale: 4,
+                      child: Image.network(
+                        imageUrl,
+                        fit: BoxFit.contain,
+                        loadingBuilder: (context, child, loadingProgress) {
+                          if (loadingProgress == null) return child;
+                          return const SizedBox(
+                            width: 200,
+                            height: 200,
+                            child: Center(child: CircularProgressIndicator()),
+                          );
+                        },
+                        errorBuilder: (context, error, stackTrace) {
+                          return SizedBox(
+                            width: 200,
+                            height: 200,
+                            child: Center(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.broken_image_outlined,
+                                    size: 48,
+                                    color: Colors.grey.shade600,
+                                  ),
+                                  const SizedBox(height: 8),
+                                  const Text('Photo could not be loaded'),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   Future<void> _deactivateMember(Map<String, dynamic> member) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -424,6 +546,7 @@ class _AdminMembersScreenState extends State<AdminMembersScreen>
           final email = (m['email'] ?? '').toString().trim();
           final phone = (m['contact'] ?? '').toString().trim();
           final city = m['city'] ?? '';
+          final profilePhotoUrl = (m['profile_photo_url'] as String?)?.trim();
             final reminderStatus =
               m['signup_reminder_status'] as Map<String, dynamic>?;
             final optedOutAt = reminderStatus?['opted_out_at'] != null
@@ -457,20 +580,11 @@ class _AdminMembersScreenState extends State<AdminMembersScreen>
             margin: const EdgeInsets.only(bottom: 8),
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             child: ListTile(
-              leading: ProfilePhoto(
-                imageUrl: m['profile_photo_url'] as String?,
+              leading: _buildMemberProfilePhoto(
+                imageUrl: profilePhotoUrl,
                 displayName: name,
-                size: 40,
-                backgroundColor: isDeactivated
-                    ? Colors.grey.shade300
-                    : isActive
-                        ? AppColors.primarySwatch.shade100
-                        : Colors.orange.shade100,
-                foregroundColor: isDeactivated
-                    ? Colors.grey.shade600
-                    : isActive
-                        ? AppColors.primarySwatch.shade700
-                        : Colors.orange.shade700,
+                isActive: isActive,
+                isDeactivated: isDeactivated,
               ),
               title: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,

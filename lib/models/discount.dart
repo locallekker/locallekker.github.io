@@ -30,6 +30,8 @@ class Discount {
   final Map<String, dynamic>? scheduleData;
   final String dealCategory;
   final bool offersDelivery;
+  final String? termsRevision;
+  final String? databaseUpdatedAt;
   final String? city; // City where this deal is available
   final DateTime createdAt;
   final DateTime updatedAt;
@@ -55,6 +57,8 @@ class Discount {
     this.scheduleData,
     this.dealCategory = 'Other',
     this.offersDelivery = false,
+    this.termsRevision,
+    this.databaseUpdatedAt,
     this.city,
     required this.createdAt,
     required this.updatedAt,
@@ -88,6 +92,8 @@ class Discount {
       scheduleData: json['schedule_data'] as Map<String, dynamic>?,
       dealCategory: (json['deal_category'] as String?) ?? 'Other',
       offersDelivery: (json['offers_delivery'] as bool?) ?? false,
+      termsRevision: json['terms_revision'] as String?,
+      databaseUpdatedAt: json['updated_at'] as String?,
       city: json['city'] as String?,
       createdAt: DateTime.parse(
         (json['created_at'] as String?) ??
@@ -122,6 +128,7 @@ class Discount {
       'schedule_data': scheduleData,
       'deal_category': dealCategory,
       'offers_delivery': offersDelivery,
+      'terms_revision': termsRevision,
       'city': city,
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt.toIso8601String(),

@@ -349,6 +349,13 @@ class NavigationService {
   }) async {
     logger.i('NavigationService: Activating subscription from recovered payment...');
 
+    final reference = verifiedDetails['reference']?.toString();
+    if (reference != null && reference.startsWith('ll-sub-')) {
+      return SubscriptionService().processManualPayment(
+        userId: userId, planType: planType, paymentReference: reference,
+      );
+    }
+
     if (planType == 'promotion_intro') {
       final metadata =
           verifiedDetails['metadata'] as Map<String, dynamic>? ?? <String, dynamic>{};
@@ -443,6 +450,7 @@ class NavigationService {
       userId: userId,
       planType: planType,
       paystackSubscriptionCode: paystackSubscriptionCode,
+      paymentReference: verifiedDetails['reference']?.toString(),
     );
 
     if (success) {
@@ -656,9 +664,11 @@ class NavigationService {
             );
             return const MemberProfilePage();
           }
-          // Browse-free model: members with a complete profile can use the
-          // app without accepting terms or paying. Terms + payment are only
-          // required when they opt to activate or request a deal.
+          final memberAcceptedTerms = await SupabaseService.instance
+              .hasMemberAcceptedTerms(member.id, profile: profile);
+          if (!memberAcceptedTerms) {
+            return const MemberTermsPage();
+          }
           _logMemberRoutingTrace(
             source: 'getInitialScreen',
             userId: member.id,
@@ -696,7 +706,10 @@ class NavigationService {
   }
 
   /// Navigate to appropriate home page after successful authentication
-  Future<void> navigateToHomeAfterAuth(BuildContext context) async {
+  Future<void> navigateToHomeAfterAuth(
+    BuildContext context, {
+    bool continueToPayment = false,
+  }) async {
     try {
       final member = SupabaseService.instance.getCurrentUser();
       if (member == null) {
@@ -781,9 +794,12 @@ class NavigationService {
             homePage = const MemberProfilePage();
             break;
           }
-          // Browse-free model: terms are not forced here; they are collected
-          // when the member opts to pay. New members (no subscription yet)
-          // get a one-time, skippable activation offer after signup.
+          final memberAcceptedTerms = await SupabaseService.instance
+              .hasMemberAcceptedTerms(member.id, profile: profile);
+          if (!memberAcceptedTerms) {
+            homePage = const MemberTermsPage();
+            break;
+          }
           final isActive = subscriptionStatus == 'active';
           var showActivationOffer = false;
           if (!isActive && subscriptionStatus == null) {
@@ -804,21 +820,30 @@ class NavigationService {
             subscriptionStatus: subscriptionStatus,
           );
 
-          homePage = showActivationOffer
+          homePage = !isActive && (continueToPayment || showActivationOffer)
               ? const PaymentRequiredScreen(allowSkip: true)
               : const MembersHomePage();
           break;
       }
 
+      if (!context.mounted) return;
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(builder: (context) => homePage),
       );
-    } catch (e) {
-      // Fallback to welcome page
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const WelcomePage()),
+    } catch (e, stackTrace) {
+      Logger().e(
+        'Post-auth navigation failed',
+        error: e,
+        stackTrace: stackTrace,
+      );
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Could not continue account setup. Please check your connection and try again.',
+          ),
+        ),
       );
     }
   }

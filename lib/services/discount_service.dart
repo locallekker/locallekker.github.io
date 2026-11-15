@@ -1,5 +1,6 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:logger/logger.dart';
+import 'package:uuid/uuid.dart';
 import '../core/constants/deal_categories.dart';
 import '../models/discount.dart';
 import '../models/deal_authorization.dart';
@@ -153,12 +154,14 @@ class DiscountService {
   /// by matching [businessCategory] or being explicitly flagged ([flagColumn]
   /// on `businesses`) and having any active deal. Each entry carries the
   /// business row plus `deal_count` and `offers_delivery`.
+  /// Startup uses [rethrowErrors] to distinguish failed queries from no deals.
   Future<List<Map<String, dynamic>>> _getCategoryPartners({
     required String category,
     required String logLabel,
     String? flagColumn,
     List<String>? businessCategories,
     String? city,
+    bool rethrowErrors = false,
   }) async {
     final businessCategory =
         (businessCategories == null || businessCategories.isEmpty)
@@ -303,6 +306,7 @@ class DiscountService {
       return partners;
     } catch (e) {
       _logger.e('Failed to load $logLabel partners: $e');
+      if (rethrowErrors) rethrow;
       return [];
     }
   }
@@ -310,39 +314,50 @@ class DiscountService {
   /// Trusted partners in the Fresh & Local produce category.
   Future<List<Map<String, dynamic>>> getFreshProducePartners({
     String? city,
+    bool rethrowErrors = false,
   }) => _getCategoryPartners(
     category: kFreshLocalCategory,
     flagColumn: 'sells_fresh_produce',
     logLabel: 'fresh produce',
     city: city,
+    rethrowErrors: rethrowErrors,
   );
 
   /// Trusted partners in the Local Sips locally produced alcohol category.
-  Future<List<Map<String, dynamic>>> getLocalSipsPartners({String? city}) =>
-      _getCategoryPartners(
-        category: kLocalSipsCategory,
-        flagColumn: 'sells_alcohol',
-        logLabel: 'local sips',
-        city: city,
-      );
+  Future<List<Map<String, dynamic>>> getLocalSipsPartners({
+    String? city,
+    bool rethrowErrors = false,
+  }) => _getCategoryPartners(
+    category: kLocalSipsCategory,
+    flagColumn: 'sells_alcohol',
+    logLabel: 'local sips',
+    city: city,
+    rethrowErrors: rethrowErrors,
+  );
 
   /// Trusted partners in the Locally Active sport/fitness category.
-  Future<List<Map<String, dynamic>>> getLocallyActivePartners({String? city}) =>
-      _getCategoryPartners(
-        category: kLocallyActiveCategory,
-        flagColumn: 'offers_sports_activities',
-        logLabel: 'locally active',
-        city: city,
-      );
+  Future<List<Map<String, dynamic>>> getLocallyActivePartners({
+    String? city,
+    bool rethrowErrors = false,
+  }) => _getCategoryPartners(
+    category: kLocallyActiveCategory,
+    flagColumn: 'offers_sports_activities',
+    logLabel: 'locally active',
+    city: city,
+    rethrowErrors: rethrowErrors,
+  );
 
   /// Food & Beverage and Restaurant businesses with at least one active deal.
-  Future<List<Map<String, dynamic>>> getLocalEatsPartners({String? city}) =>
-      _getCategoryPartners(
-        category: kLocalEatsCategory,
-        businessCategories: kLocalEatsBusinessCategories,
-        logLabel: 'local eats',
-        city: city,
-      );
+  Future<List<Map<String, dynamic>>> getLocalEatsPartners({
+    String? city,
+    bool rethrowErrors = false,
+  }) => _getCategoryPartners(
+    category: kLocalEatsCategory,
+    businessCategories: kLocalEatsBusinessCategories,
+    logLabel: 'local eats',
+    city: city,
+    rethrowErrors: rethrowErrors,
+  );
 
   /// Lightweight check used to decide whether to surface the Fresh & Local
   /// entry point on the member home screen.
@@ -418,39 +433,185 @@ class DiscountService {
   Future<FreshLocalSummary> getFreshLocalSummary({
     String? city,
     DateTime? since,
+    bool rethrowErrors = false,
   }) async => _getCategorySummary(
     category: kFreshLocalCategory,
-    partners: await getFreshProducePartners(city: city),
+    partners: await getFreshProducePartners(
+      city: city,
+      rethrowErrors: rethrowErrors,
+    ),
     since: since,
   );
 
   Future<FreshLocalSummary> getLocalSipsSummary({
     String? city,
     DateTime? since,
+    bool rethrowErrors = false,
   }) async => _getCategorySummary(
     category: kLocalSipsCategory,
-    partners: await getLocalSipsPartners(city: city),
+    partners: await getLocalSipsPartners(
+      city: city,
+      rethrowErrors: rethrowErrors,
+    ),
     since: since,
   );
 
   Future<FreshLocalSummary> getLocallyActiveSummary({
     String? city,
     DateTime? since,
+    bool rethrowErrors = false,
   }) async => _getCategorySummary(
     category: kLocallyActiveCategory,
-    partners: await getLocallyActivePartners(city: city),
+    partners: await getLocallyActivePartners(
+      city: city,
+      rethrowErrors: rethrowErrors,
+    ),
     since: since,
   );
 
   Future<FreshLocalSummary> getLocalEatsSummary({
     String? city,
     DateTime? since,
+    bool rethrowErrors = false,
   }) async => _getCategorySummary(
     category: kLocalEatsCategory,
-    partners: await getLocalEatsPartners(city: city),
+    partners: await getLocalEatsPartners(
+      city: city,
+      rethrowErrors: rethrowErrors,
+    ),
     since: since,
     countAllPartnerDeals: true,
   );
+
+  /// Loads every home-screen category banner with two parallel queries and
+  /// computes the same results as the individual `get*Summary` methods.
+  ///
+  /// Returns summaries keyed by category name. [sinceByCategory] supplies the
+  /// "last seen" timestamp used for each category's new-deal badge.
+  Future<Map<String, FreshLocalSummary>> getHomeCategorySummaries({
+    String? city,
+    Map<String, DateTime?> sinceByCategory = const {},
+    bool rethrowErrors = false,
+  }) async {
+    const configs = <_HomeCategoryConfig>[
+      _HomeCategoryConfig(kFreshLocalCategory, flagColumn: 'sells_fresh_produce'),
+      _HomeCategoryConfig(kLocalSipsCategory, flagColumn: 'sells_alcohol'),
+      _HomeCategoryConfig(
+        kLocallyActiveCategory,
+        flagColumn: 'offers_sports_activities',
+      ),
+      _HomeCategoryConfig(
+        kLocalEatsCategory,
+        businessCategories: kLocalEatsBusinessCategories,
+        countAllPartnerDeals: true,
+      ),
+    ];
+    try {
+      final results = await Future.wait<dynamic>([
+        _supabase
+            .from('trusted_partner_discounts')
+            .select('trusted_partner_id, deal_category, offers_delivery, created_at')
+            .eq('is_active', true),
+        _supabase
+            .from(SupabaseService.instance.businessCatalogueTable)
+            .select(
+              'owner_member_id, category, city, sells_fresh_produce, '
+              'sells_alcohol, offers_sports_activities',
+            ),
+      ]);
+      final deals = List<Map<String, dynamic>>.from(results[0] as List);
+      final allBusinesses = List<Map<String, dynamic>>.from(results[1] as List);
+      final trimmedCity = city?.trim();
+      final cityBusinesses = (trimmedCity == null || trimmedCity.isEmpty)
+          ? allBusinesses
+          : allBusinesses.where((b) => b['city'] == trimmedCity).toList();
+
+      final dealsByOwner = <String, List<Map<String, dynamic>>>{};
+      for (final deal in deals) {
+        final ownerId = deal['trusted_partner_id'] as String?;
+        if (ownerId == null) continue;
+        (dealsByOwner[ownerId] ??= []).add(deal);
+      }
+
+      final summaries = <String, FreshLocalSummary>{};
+      for (final config in configs) {
+        final categoryDealOwners = {
+          for (final deal in deals)
+            if (deal['deal_category'] == config.category &&
+                deal['trusted_partner_id'] is String)
+              deal['trusted_partner_id'] as String,
+        };
+        final candidateIds = <String>{...categoryDealOwners};
+        for (final business in allBusinesses) {
+          final ownerId = business['owner_member_id'] as String?;
+          if (ownerId == null) continue;
+          if ((config.flagColumn != null &&
+                  business[config.flagColumn] == true) ||
+              (config.businessCategories?.contains(business['category']) ??
+                  false)) {
+            candidateIds.add(ownerId);
+          }
+        }
+
+        final since = sinceByCategory[config.category]?.toUtc();
+        final partnerOwners = <String>{};
+        var partnerCount = 0;
+        var dealCount = 0;
+        for (final business in cityBusinesses) {
+          final ownerId = business['owner_member_id'] as String?;
+          if (ownerId == null || !candidateIds.contains(ownerId)) continue;
+          if (config.businessCategories != null &&
+              !config.businessCategories!.contains(business['category']) &&
+              !categoryDealOwners.contains(ownerId)) {
+            continue;
+          }
+          final ownerDeals = dealsByOwner[ownerId] ?? const [];
+          final categoryCount = ownerDeals
+              .where((d) => d['deal_category'] == config.category)
+              .length;
+          final count = config.businessCategories != null || categoryCount == 0
+              ? ownerDeals.length
+              : categoryCount;
+          if (count == 0) continue;
+          partnerCount++;
+          dealCount += count;
+          partnerOwners.add(ownerId);
+        }
+
+        var newDealCount = 0;
+        if (since != null) {
+          for (final ownerId in partnerOwners) {
+            for (final deal in dealsByOwner[ownerId] ?? const []) {
+              if (!config.countAllPartnerDeals &&
+                  deal['deal_category'] != config.category) {
+                continue;
+              }
+              final created = DateTime.tryParse(
+                deal['created_at']?.toString() ?? '',
+              );
+              if (created != null && created.toUtc().isAfter(since)) {
+                newDealCount++;
+              }
+            }
+          }
+        }
+
+        summaries[config.category] = partnerCount == 0
+            ? const FreshLocalSummary()
+            : FreshLocalSummary(
+                hasPartners: true,
+                newDealCount: newDealCount,
+                partnerCount: partnerCount,
+                dealCount: dealCount,
+              );
+      }
+      return summaries;
+    } catch (e) {
+      _logger.e('Failed to load home category summaries: $e');
+      if (rethrowErrors) rethrow;
+      return {for (final config in configs) config.category: const FreshLocalSummary()};
+    }
+  }
 
   Future<List<Discount>> getNearbyDeals(
     String currentCity, [
@@ -565,6 +726,7 @@ class DiscountService {
 
   Future<void> updateDiscount(
     String discountId, {
+    String? expectedTermsRevision,
     String? name,
     String? description,
     String? itemName,
@@ -614,13 +776,24 @@ class DiscountService {
           print('🖼️ Updating image_url to: ${imageUrl ?? "NULL"}');
       }
       updates['updated_at'] = DateTime.now().toUtc().toIso8601String();
+      if (expectedTermsRevision != null) {
+        updates['terms_revision'] = const Uuid().v4();
+      }
 
       if (kDebugMode) print('📝 Updating discount $discountId with: $updates');
 
-      await _supabase
+      final query = _supabase
           .from('trusted_partner_discounts')
           .update(updates)
           .eq('id', discountId);
+      if (expectedTermsRevision != null) {
+        final rows = await query.eq('terms_revision', expectedTermsRevision).select('id');
+        if (rows.isEmpty) {
+          throw Exception('This deal changed. Reopen it and try again.');
+        }
+      } else {
+        await query;
+      }
 
       if (kDebugMode) print('✅ Discount updated successfully');
     } catch (e) {
@@ -1123,11 +1296,11 @@ class DiscountService {
           .insert({
             'member_id': memberId,
             'virtual_receipt_id': virtualReceiptId,
-            'receipt_number': receiptNumber,
+            'title': receiptNumber,
+            'receipt_type': 'virtual',
             'business_name': businessName,
             'amount': amount,
-            'transaction_date': transactionDate.toIso8601String(),
-            'status': 'saved',
+            'receipt_date': transactionDate.toIso8601String(),
           })
           .select()
           .single();
@@ -1531,4 +1704,18 @@ class DiscountService {
       // Don't throw - this is a background operation
     }
   }
+}
+
+class _HomeCategoryConfig {
+  const _HomeCategoryConfig(
+    this.category, {
+    this.flagColumn,
+    this.businessCategories,
+    this.countAllPartnerDeals = false,
+  });
+
+  final String category;
+  final String? flagColumn;
+  final List<String>? businessCategories;
+  final bool countAllPartnerDeals;
 }

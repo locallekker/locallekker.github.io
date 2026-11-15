@@ -211,13 +211,17 @@ class RestaurantDealConfig {
     switch (type) {
       case RestaurantDealType.foodPercent:
       case RestaurantDealType.group:
-        if (percentage <= 0) return 'Enter a percentage between 1 and 100.';
+        if (number('percentage') <= 0 || number('percentage') > 100) {
+          return 'Enter a percentage between 1 and 100.';
+        }
         if (type == RestaurantDealType.group && minPartySize < 2) {
           return 'Minimum table size must be at least 2.';
         }
         return null;
       case RestaurantDealType.happyHour:
-        if (percentage <= 0) return 'Enter a percentage between 1 and 100.';
+        if (number('percentage') <= 0 || number('percentage') > 100) {
+          return 'Enter a percentage between 1 and 100.';
+        }
         if (schedule.timeSlots.isEmpty) return 'Add at least one happy hour time slot.';
         return null;
       case RestaurantDealType.bogo:
@@ -259,7 +263,9 @@ class RestaurantDealConfig {
         return null;
       case RestaurantDealType.birthday:
         if (birthdayIsPercent) {
-          if (percentage <= 0) return 'Enter a percentage between 1 and 100.';
+          if (number('percentage') <= 0 || number('percentage') > 100) {
+            return 'Enter a percentage between 1 and 100.';
+          }
         } else {
           if (text('free_item_name').isEmpty) return 'Enter the birthday treat.';
           if (number('free_item_value') <= 0) return 'Enter the value of the treat.';

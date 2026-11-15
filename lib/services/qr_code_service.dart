@@ -12,6 +12,74 @@ class QrCodeService {
 
   final SupabaseClient _client = Supabase.instance.client;
 
+  Future<String?> refreshMemberQrCode(
+    String userId, {
+    bool force = false,
+  }) async {
+    final row = await _client
+        .from('user_qr_codes')
+        .select('id, qr_code, expires_at')
+        .eq('user_id', userId)
+        .eq('is_active', true)
+        .maybeSingle();
+    if (row == null) return null;
+
+    final now = DateTime.now().toUtc();
+    final membershipExpiry = DateTime.parse(row['expires_at'] as String);
+    if (!membershipExpiry.isAfter(now)) return null;
+
+    final currentQr = row['qr_code'] as String;
+    if (!force &&
+        isFreshMemberQrCode(
+          currentQr,
+          now: now.add(const Duration(seconds: 15)),
+        )) {
+      return currentQr;
+    }
+
+    final remaining = membershipExpiry.difference(now);
+    final qrCode = await generateEphemeralQrCode(
+      userId,
+      ttl: remaining < const Duration(seconds: 45)
+          ? remaining
+          : const Duration(seconds: 45),
+    );
+    final saved = await _client
+        .from('user_qr_codes')
+        .update({'qr_code': qrCode, 'updated_at': now.toIso8601String()})
+        .eq('id', row['id'])
+        .eq('user_id', userId)
+        .eq('is_active', true)
+        .gt('expires_at', now.toIso8601String())
+        .select('qr_code')
+        .single();
+    return saved['qr_code'] as String;
+  }
+
+  static bool isFreshMemberQrCode(String qrCode, {DateTime? now}) {
+    return memberQrExpiry(qrCode)?.isAfter(now ?? DateTime.now().toUtc()) ??
+        false;
+  }
+
+  static DateTime? memberQrExpiry(String qrCode) {
+    try {
+      final payload = jsonDecode(qrCode);
+      if (payload is! Map<String, dynamic> ||
+          payload['type'] != 'user_qr_v2' ||
+          payload['exp'] is! int) {
+        return null;
+      }
+      return DateTime.fromMillisecondsSinceEpoch(
+        (payload['exp'] as int) * 1000,
+        isUtc: true,
+      );
+    } on FormatException {
+      return null;
+    } on RangeError {
+      return null;
+    }
+  }
+
   /// Generate a short-lived QR payload to reduce screenshot reuse.
   Future<String> generateEphemeralQrCode(
     String userId, {
@@ -37,7 +105,8 @@ class QrCodeService {
         'surname': surname,
         'iat': issuedAt.millisecondsSinceEpoch ~/ 1000,
         'exp': expiresAt.millisecondsSinceEpoch ~/ 1000,
-        'nonce': '${issuedAt.microsecondsSinceEpoch}-${Random().nextInt(999999)}',
+        'nonce':
+            '${issuedAt.microsecondsSinceEpoch}-${Random().nextInt(999999)}',
       };
       return jsonEncode(data);
     } catch (e) {
@@ -53,7 +122,8 @@ class QrCodeService {
         'user_id': userId,
         'iat': issuedAt.millisecondsSinceEpoch ~/ 1000,
         'exp': expiresAt.millisecondsSinceEpoch ~/ 1000,
-        'nonce': '${issuedAt.microsecondsSinceEpoch}-${Random().nextInt(999999)}',
+        'nonce':
+            '${issuedAt.microsecondsSinceEpoch}-${Random().nextInt(999999)}',
       };
       return jsonEncode(data);
     }

@@ -103,6 +103,7 @@ class MemberActivationService {
       MaterialPageRoute(
         builder: (_) => PaymentRequiredScreen(
           allowSkip: true,
+          popOnSkip: true,
           potentialSavings: potentialSavings,
         ),
       ),

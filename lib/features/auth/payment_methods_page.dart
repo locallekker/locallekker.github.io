@@ -97,15 +97,16 @@ class _PaymentMethodsPageState extends State<PaymentMethodsPage> {
       // small (R1) authorization with Paystack, then complete it in a WebView.
       // On success PaystackService.addPaymentMethod saves the reusable
       // authorization to members_card_details.
-      final authUrl = await _paystackService.initializePaymentMethod(
+      final checkout = await _paystackService.initializePaymentMethod(
         userId: currentUser.id,
         userEmail: currentUser.email ?? '',
         amount: 100, // R1.00 in kobo for tokenization
       );
 
-      if (authUrl == null || authUrl.isEmpty) {
+      if (checkout == null) {
         throw Exception('Failed to initialize card setup');
       }
+      final authUrl = checkout['authorization_url']!;
 
       if (!mounted) return;
       if (kIsWeb) {
@@ -125,6 +126,7 @@ class _PaymentMethodsPageState extends State<PaymentMethodsPage> {
         MaterialPageRoute(
           builder: (context) => PaymentMethodWebViewPage(
             authorizationUrl: authUrl,
+            transactionReference: checkout['reference']!,
             userId: currentUser.id,
             userEmail: currentUser.email ?? '',
           ),

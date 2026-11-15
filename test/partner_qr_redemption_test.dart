@@ -1,7 +1,12 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:local_lekker/models/discount.dart';
 import 'package:local_lekker/models/restaurant_deal.dart';
 import 'package:local_lekker/services/partner_qr_redemption_service.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 Discount discount({
   String type = 'standard',
@@ -14,6 +19,7 @@ Discount discount({
   bool requiresManualPrice = false,
   Map<String, dynamic>? customData,
   Map<String, dynamic>? billDiscountData,
+  String? termsRevision,
 }) =>
     Discount(
       id: 'deal-id',
@@ -32,11 +38,45 @@ Discount discount({
       isBillDiscount: isBillDiscount,
       isOnceOff: isOnceOff,
       billDiscountData: billDiscountData,
+      termsRevision: termsRevision,
       createdAt: DateTime.utc(2026),
       updatedAt: DateTime.utc(2026),
     );
 
 void main() {
+  test('QR redemption submits the revision displayed to the partner', () async {
+    Map<String, dynamic>? requestBody;
+    final client = SupabaseClient(
+      'https://example.supabase.co',
+      'test-key',
+      httpClient: MockClient((request) async {
+        requestBody = jsonDecode(request.body) as Map<String, dynamic>;
+        return http.Response(
+          '"redemption-id"',
+          200,
+          headers: {'content-type': 'application/json'},
+          request: request,
+        );
+      }),
+    );
+    final currentDeal = discount(fixedAmount: 16, termsRevision: 'revision-one');
+    final quote = PartnerQrRedemptionService.quote(
+      deal: currentDeal,
+      billTotal: 95,
+    );
+    await PartnerQrRedemptionService(client: client).completeRedemption(
+      businessId: 'business',
+      redemptionSessionId: 'session',
+      deal: currentDeal,
+      quote: quote,
+      posTotal: quote.total,
+      idempotencyKey: 'key',
+      extrasAmount: 0,
+      checkoutNotes: '',
+    );
+    expect((requestBody!['p_checkout'] as Map)['terms_revision'], 'revision-one');
+  });
+
   group('Partner QR redemption calculator', () {
     test('calculates a fixed-price deal for multiple items', () {
       final quote = PartnerQrRedemptionService.quote(

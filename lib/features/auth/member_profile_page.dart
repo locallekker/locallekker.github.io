@@ -1865,7 +1865,7 @@ class _MemberBankingDetailsDialogState
                         return;
                       }
 
-                      final authUrl = await paystackService
+                      final checkout = await paystackService
                           .initializePaymentMethod(
                             userId: user.id,
                             userEmail: user.email ?? '',
@@ -1874,7 +1874,8 @@ class _MemberBankingDetailsDialogState
 
                       setState(() => _isSaving = false);
 
-                      if (authUrl != null) {
+                      if (checkout != null) {
+                        final authUrl = checkout['authorization_url']!;
                         if (kIsWeb) {
                           final opened = await openWebCheckout(authUrl);
                           if (!opened && context.mounted) {
@@ -1896,6 +1897,7 @@ class _MemberBankingDetailsDialogState
                           MaterialPageRoute(
                             builder: (context) => PaymentMethodWebViewPage(
                               authorizationUrl: authUrl,
+                              transactionReference: checkout['reference']!,
                               userId: user.id,
                               userEmail: user.email ?? '',
                             ),
